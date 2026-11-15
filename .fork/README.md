@@ -13,3 +13,7 @@ Synchronization does not install packages or publish releases.
 hourly and dispatches synchronization if no run has started for 30 hours. It also re-enables a
 workflow disabled by GitHub's inactivity policy. It respects manually disabled workflows.
 It uses the existing `gh` login and stores no authentication values.
+
+The `qa` directory retains screenshots from the macOS simulator against disposable Plex media.
+The movie confirmation covers all file versions. The episode confirmation names the show,
+season and episode. Both dialogs default to Cancel.
