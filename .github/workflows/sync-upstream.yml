@@ -1,0 +1,33 @@
+name: Synchronize upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: fork-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  synchronize:
+    if: github.repository == 'kopiro/plx-native'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: kopiro
+          fetch-depth: 0
+      - name: Set merge identity
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+      - name: Merge and validate upstream before updating the customized branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .fork/sync_upstream.py --repo "$GITHUB_REPOSITORY"
