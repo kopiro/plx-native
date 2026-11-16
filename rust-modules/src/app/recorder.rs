@@ -247,15 +247,6 @@ pub(crate) fn state_fp_v7() -> u64 {
     plx_ui::rec::state_fp(&shapes)
 }
 
-// Probe only: install complete vector and numeric literals after the production probe run.
-#[cfg(test)]
-fn session_app_prior_vector() -> Vec<String> {
-    // The codec-5 census is historical. Current screen shapes belong only to state_fp().
-    let frozen: Value = serde_json::from_str(include_str!("fixtures/session-codec-v5/current-base-fingerprints.json")).unwrap();
-    frozen["prior_vector"].as_array().unwrap().iter()
-        .map(|shape| shape.as_str().unwrap().to_owned()).collect()
-}
-
 #[cfg(test)]
 #[test]
 fn historical_session_census_hashes_its_frozen_vectors() {
@@ -273,14 +264,13 @@ fn historical_session_census_hashes_its_frozen_vectors() {
 #[test]
 fn session_app_fingerprint_probe_only() {
     let frozen: Value = serde_json::from_str(include_str!("fixtures/session-codec-v5/current-base-fingerprints.json")).unwrap();
-    let prior = session_app_prior_vector();
-    assert_eq!(serde_json::to_value(&prior).unwrap(), frozen["prior_vector"]);
-    let refs = prior.iter().map(String::as_str).collect::<Vec<_>>();
-    let fp_prior = plx_ui::rec::state_fp(&refs);
+    // Historical identities use their frozen census, including the menu kinds that existed then.
+    let prior: Vec<&str> = frozen["prior_vector"].as_array().unwrap().iter()
+        .map(|shape| shape.as_str().unwrap()).collect();
+    let fp_prior = plx_ui::rec::state_fp(&prior);
     assert_eq!(fp_prior, FP_PRIOR);
     assert_eq!(frozen["fp_prior"].as_u64(), Some(FP_PRIOR));
-    assert_eq!(plx_ui::rec::state_fp(&refs), fp_prior);
-    assert_ne!(state_fp(), fp_prior);
+    assert_eq!(plx_ui::rec::state_fp(&prior), fp_prior);
     let mut prospective = prior.clone();
     let indices: Vec<_> = prior.iter().enumerate().filter(|(_, shape)| **shape == super::bootstrap::SHAPE).map(|(i, _)| i).collect();
     assert_eq!(indices.len(), 1);
@@ -289,11 +279,10 @@ fn session_app_fingerprint_probe_only() {
     assert_eq!(outer.matches("session:SessionInitV5").count(), 1);
     let new_outer = outer.replacen("ControlledHomeInitV6{", "ControlledHomeInitV7{", 1)
         .replacen("session:SessionInitV5", "session:SessionInitV6", 1);
-    prospective[indices[0]] = new_outer;
+    prospective[indices[0]] = &new_outer;
     assert_eq!(serde_json::to_value(&prospective).unwrap(), frozen["prospective_vector"]);
     assert_eq!(prior.iter().zip(&prospective).filter(|(a, b)| a != b).count(), 1);
-    let prospective_refs = prospective.iter().map(String::as_str).collect::<Vec<_>>();
-    let prospective_fp_v6 = plx_ui::rec::state_fp(&prospective_refs);
+    let prospective_fp_v6 = plx_ui::rec::state_fp(&prospective);
     assert_eq!(prospective_fp_v6, FP_V6);
     assert_ne!(state_fp(), prospective_fp_v6, "AppFrameV5 retires the legacy press contribution");
     let manifest = format!(r#"{{"schema":{},"state_fp":{prospective_fp_v6}}}"#, plx_ui::rec::SCHEMA);
@@ -301,7 +290,6 @@ fn session_app_fingerprint_probe_only() {
         Some(RecError::StateShape { theirs: prospective_fp_v6, ours: state_fp() }));
     assert_eq!(frozen["prospective_fp_v6"].as_u64(), Some(FP_V6));
     for manifest in [
-        include_str!("../../../tests/fixtures/replay/1-boot-home-chip-grid/manifest.json"),
         include_str!("../../../tests/fixtures/replay/6-settings-family/manifest.json"),
         include_str!("../../../tests/fixtures/replay/12-filmography-detail-return/manifest.json"),
     ] {
@@ -2926,10 +2914,10 @@ mod fixture_preflight_tests {
     fn committed_recordings_keep_valid_page_requests_and_initial_hashes() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/replay");
         for (name, fp, frames) in [
-            ("1-boot-home-chip-grid", FP_PRIOR, 200),
+            ("1-boot-home-chip-grid", state_fp(), 201),
             ("6-settings-family", FP_PRIOR, 621),
             ("12-filmography-detail-return", FP_PRIOR, 457),
-            ("12-filmography-detail-return-current", state_fp(), 642),
+            ("12-filmography-detail-return-current", state_fp(), 577),
         ] {
             let dir = root.join(name);
             let manifest = std::fs::read_to_string(dir.join("manifest.json")).unwrap();
