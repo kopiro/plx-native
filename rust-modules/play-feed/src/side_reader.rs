@@ -473,6 +473,9 @@ mod tests {
             while !stop.is_set() {
                 std::thread::park_timeout(Duration::from_millis(20));
             }
+            // Preserve the fixture's injected match through the worker's final delta save.
+            // Otherwise a scheduled old reader overwrites it with None during a track switch.
+            *_delta = exact_delta_ns();
             RunEnd::Stopped
         }
         fn desired_sub_idx(&self) -> i32 { self.selected.load(Ordering::Acquire) }
