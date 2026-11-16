@@ -2914,10 +2914,10 @@ mod fixture_preflight_tests {
     fn committed_recordings_keep_valid_page_requests_and_initial_hashes() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/replay");
         for (name, fp, frames) in [
-            ("1-boot-home-chip-grid", state_fp(), 201),
+            ("1-boot-home-chip-grid", state_fp(), 272),
             ("6-settings-family", FP_PRIOR, 621),
             ("12-filmography-detail-return", FP_PRIOR, 457),
-            ("12-filmography-detail-return-current", state_fp(), 577),
+            ("12-filmography-detail-return-current", state_fp(), 643),
         ] {
             let dir = root.join(name);
             let manifest = std::fs::read_to_string(dir.join("manifest.json")).unwrap();

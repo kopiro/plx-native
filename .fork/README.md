@@ -22,3 +22,6 @@ Filmography credits now offer one Add to Watchlist action on hold, including tit
 library copy. The shared menu and Watchlist write path also coexist with media deletion.
 `qa/filmography-hold-menu.png` shows the add-only menu on a catalog-only title;
 `qa/filmography-watchlist-added.png` shows the same page after a successful mock Plex write.
+
+The deletion review captures show the shared danger row at rest and focused, and the Detail
+menu with only Delete. These were inspected in the macOS simulator against synthetic media.

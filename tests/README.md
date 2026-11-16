@@ -53,7 +53,7 @@ fixture list. Expected outcomes: **SAME=6, REFUSED_EXPECTED=2, unexpected=0**.
   mode (its frame count is pinned by `tests/test_replay_fixtures.py`'s census and
   `fixture_preflight_tests` in `app/recorder.rs`); Settings: 621 in each.
 - `12-filmography-detail-return-current`: the current V11 default Flow 12 producer's typed
-  Person → Filmography → item Detail → Back → Back/focus-memory flow, 577 fully graded frames
+  Person → Filmography → item Detail → Back → Back/focus-memory flow, 643 fully graded frames
   in each mode. Both require raw exit 0, exactly one SAME, and all eight difference counters zero.
   Any current refusal, including a historical scheduler reason, fails the gate.
 - Immutable `12-filmography-detail-return`: historical content scheduling is incompatible;
@@ -61,7 +61,7 @@ fixture list. Expected outcomes: **SAME=6, REFUSED_EXPECTED=2, unexpected=0**.
   This is a typed compatibility outcome, not a supported replay, SAME, quarantine or skip.
 
 The Home and current Filmography anchors were privacy-checked and re-recorded through
-`tools/plxnative-rec rerecord` after the Filmography menu changed the argument shape.
+`tools/plxnative-rec rerecord` after the Filmography Add-only and Detail Delete-only menus changed the argument shape.
 The historical Settings and Filmography recordings and the synthetic alphabet remain unchanged.
 Manifest preference/language strings pass only the checker's closed exact-path enums;
 all remaining text and metric bytes retain the synthetic alphabet gate. Rust fixture preflight and

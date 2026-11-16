@@ -626,10 +626,10 @@ class ReplayFixtures(unittest.TestCase):
             fps[name] = manifest.get("state_fp")
         self.assertEqual(checked, 4)
         self.assertEqual(fps, {
-            '1-boot-home-chip-grid': 17486886285566504064,
+            '1-boot-home-chip-grid': 11535473737658743133,
             '6-settings-family': 4239819007634745513,
             '12-filmography-detail-return': 4239819007634745513,
-            '12-filmography-detail-return-current': 17486886285566504064,
+            '12-filmography-detail-return-current': 11535473737658743133,
         })
 
     def _tool(self, *args):

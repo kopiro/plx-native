@@ -196,10 +196,10 @@ open. The plan's `{hex}` keying for all three is not implemented; the owner has 
 the difference. The Remove row's wording is `Remove Show...` for an episode (plan 1.8), not the
 brief's `Remove Show from Watchlist`.
 
-**plex.tv unreachable.** The page shows the full-screen read-out with Retry (a populated list is never
-blanked). Detail, Home hero and catalog controls draw the outline face when membership is unknown.
-Membership-aware menus omit the Watchlist row without a face. Filmography offers its idempotent
-Add action whenever the credit has a valid catalog ID. A refused press flips then reverts. Reproduce with
+**plex.tv unreachable.** With no list landed, the page shows the full-screen read-out with Retry. A list that
+has landed, populated or empty, is never blanked: an empty Watchlist keeps its empty read-out and its item-menu
+rows. Detail, Home hero and catalog controls draw the outline face when membership is unknown, the item-menu
+row is omitted when there is no face to offer, and a press flips then reverts. Filmography still offers its idempotent Add action whenever the credit has a valid catalog ID. Reproduce with
 `/tmp/plxnative-nowan` or the failing-closure tests.
 
 **The count (Q7, decided: option D; reshaped onto the Library's header row).** The page header is the
