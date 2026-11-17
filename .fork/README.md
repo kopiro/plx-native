@@ -25,3 +25,8 @@ library copy. The shared menu and Watchlist write path also coexist with media d
 
 The deletion review captures show the shared danger row at rest and focused, and the Detail
 menu with only Delete. These were inspected in the macOS simulator against synthetic media.
+
+The November 17 upstream integration uses the V13 recorder format. The fork current anchor
+was captured against the seed-1 synthetic mock and re-recorded after the menu argument shape
+changed. Targets and Resolve each grade all 906 frames without divergence; the four historical
+fixtures retain upstream bytes and their explicit early-refusal policy.

@@ -405,13 +405,12 @@ def main():
         # --- free_bytes / main_checkout, for real -----------------------------------------------------------------
         real = notify.free_bytes(tmp)
         check(isinstance(real, int) and real > 0, "free_bytes: a real directory", repr(real))
-        # Other checks write to this volume concurrently; hold its counters fixed while checking
-        # that a missing path resolves to its closest existing ancestor.
+        # Free space can change between real reads while other CI steps write to this volume.
         snapshot = os.statvfs(tmp)
-        with patch.object(notify.os, "statvfs", return_value=snapshot) as stat:
-            available = notify.free_bytes(os.path.join(tmp, "not", "made", "yet"))
-            check(available == snapshot.f_bavail * snapshot.f_frsize
-                  and stat.call_count == 1 and stat.call_args.args == (tmp,),
+        with patch.object(notify.os, "statvfs", return_value=snapshot) as statvfs:
+            missing_free = notify.free_bytes(os.path.join(tmp, "not", "made", "yet"))
+            check(missing_free == snapshot.f_bavail * snapshot.f_frsize
+                  and statvfs.call_args_list == [((tmp,), {})],
                   "free_bytes: a path that does not exist reads its closest existing ancestor's volume")
         check(notify.free_bytes(None) is None, "free_bytes: None is None, not an exception")
 
