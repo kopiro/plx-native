@@ -20,8 +20,14 @@
 use super::*;
 use plx_ui::decision_prompt::{DecisionPrompt, PromptStep};
 use plx_ui::screen::{At, Dir, Focusable, GroupSpec, Placed, Step};
+use plx_ui::a11y::{A11y, A11yPath};
 use super::super::family::ALERT_GROUP;
+use plx_ui::decision_alert::AlertAnswers;
 use super::super::registry::ALERT;
+
+/// The Direct Play *Forced* question's two answers as an accessibility id names them:
+/// `alert.cancel` and `alert.enable`.
+const FORCE_ANSWERS: AlertAnswers = AlertAnswers::new(ALERT_GROUP, ALERT, ALERT + 1, "cancel", "enable");
 
 /// The Retry row's focus key: above any option position (the language list is a few hundred rows).
 const RETRY_KEY: u32 = 1 << 20;
@@ -73,18 +79,18 @@ fn option_form(options: Vec<(String, Value)>, current: &Value, busy: bool, retry
         choices = choices.item_keyed(OptionId::Choice(value.clone()), RowKey(i as u32), RowKind::Choice, PickAction::Pick(value), row);
     }
     let retry = FormSection::new("").visible(retry).item_keyed(OptionId::Retry, RowKey(RETRY_KEY), RowKind::Button, PickAction::Retry,
-        Row::new(plx_platform::i18n::msg::settings_audio_retry()).detail(plx_platform::i18n::msg::settings_audio_retry_detail()));
+        Row::new(plx_os::i18n::msg::settings_audio_retry()).detail(plx_os::i18n::msg::settings_audio_retry_detail()));
     Form::new().section(choices).section(retry)
 }
 
 impl PickerPage {
     pub fn new(entry: EntryId, field: PickerKind, inputs: &crate::registry::ScreenInputs) -> Self {
-        let mut s = Self { inputs: inputs.clone(), marker_prefs: Default::default(), entry, form: FormTable::new(BAND),
+        let mut s = Self { inputs: inputs.clone(), marker_prefs: Default::default(), entry, form: FormTable::page(BAND),
             state: PickerState { shown_marker_scope: 0, marker_prefs: Default::default(), field, selected: 0, io: Io { busy: false, status: String::new() },
                 quality: inputs.preference::<QualityPref>(), direct_play: inputs.preference::<DirectPlayModePref>(),
                 checked: u32::MAX, confirming: false, affirmative: false, alert_scroll: 0 },
             copy: String::new(), txn: Txn::new(true, &inputs.profile),
-            alert: DecisionPrompt::new(ALERT_GROUP, ALERT, ALERT + 1, plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::settings_playback_enable_force_c()) };
+            alert: DecisionPrompt::new(ALERT_GROUP, ALERT, ALERT + 1, plx_os::i18n::msg::settings_cancel_c(), plx_os::i18n::msg::settings_playback_enable_force_c()) };
         s.rebuild(true);
         s
     }
@@ -117,7 +123,7 @@ impl PickerPage {
             .iter().position(|(_, v)| *v == current).map_or(u32::MAX, |i| i as u32)
     }
     fn view(&self) -> TableScreen<'_> {
-        TableScreen::new(Header::new(RouteLayout::settings_page(), Some(self.state.field.parent_title()),
+        TableScreen::new(Header::new(RouteLayout::screen(), Some(self.state.field.parent_title()),
             self.state.field.title(), &self.copy), &self.form.table, GroupId(0), self.entry).keyed(&self.form)
     }
     fn focus(&self, fx: &mut Effects<'_, InnerHost>, group: GroupId) {
@@ -149,7 +155,7 @@ impl PickerPage {
         let keep = if seat_current { OptionId::Choice(current.clone()) } else {
             self.form.selected_id().cloned().unwrap_or_else(|| OptionId::Choice(current.clone())) };
         let show_retry = self.account() && !self.state.io.busy && !self.state.io.status.is_empty();
-        self.form.table.compact = false; self.form.table.board_metrics(true); self.form.table.header_ink = theme::TEXT_READING; self.form.table.list_focused = true;
+        self.form.table.list_focused = true;
         self.form.set(option_form(options, &current, self.state.io.busy, show_retry), Some(&keep));
         self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
     }
@@ -179,7 +185,7 @@ impl PickerPage {
         // that changed nothing.
         if self.current() == value && self.durable(&value) { self.pop(fx); return; }
         if value == Value::DirectPlay(DirectPlayMode::Forced) && self.state.direct_play != DirectPlayMode::Forced {
-            self.alert.open(plx_platform::i18n::msg::settings_playback_force_question_c(), plx_platform::i18n::msg::settings_playback_force_body());
+            self.alert.open(plx_os::i18n::msg::settings_playback_force_question_c(), plx_os::i18n::msg::settings_playback_force_body());
             self.state.confirming = true; self.state.affirmative = false;
             self.state.alert_scroll = self.alert.scroll_target_bits(); self.focus(fx, ALERT_GROUP);
             fx.invalidate(plx_machine::present::Provenance::Input);
@@ -290,7 +296,7 @@ impl Machine<InnerHost> for PickerPage {
                     Landed::Nothing if started => { self.rebuild(true); fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session)); }
                     Landed::Nothing => {}
                 }
-                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
@@ -349,13 +355,33 @@ impl Focusable<InnerHost> for PickerPage {
             None => Focusable::<InnerHost>::seat(&self.view(), g, from, cx),
         }
     }
+    // While the question is open its two answers are the page's only elements, as `groups` lists them.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, InnerHost>) -> Option<A11y<'_>> {
+        if self.alert.is_open() {
+            return FORCE_ANSWERS.a11y(*key);
+        }
+        Focusable::<InnerHost>::a11y(&self.view(), key, cx).map(A11y::into_owned)
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, InnerHost>, out: &mut Vec<u32>) {
+        if self.alert.is_open() {
+            FORCE_ANSWERS.elems(g, out);
+            return;
+        }
+        Focusable::<InnerHost>::a11y_elems(&self.view(), g, cx, out)
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, InnerHost>) -> Option<u32> {
+        if self.alert.is_open() {
+            return FORCE_ANSWERS.find(path);
+        }
+        Focusable::<InnerHost>::a11y_find(&self.view(), path, cx)
+    }
 }
 
 impl Screen<InnerHost> for PickerPage {
     fn name(&self) -> &'static str { word::PICKER }
     fn state(&self) -> &dyn LogicalState { &self.state }
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> {
-        Some(Cow::Borrowed(plx_platform::i18n::msg::settings_title()))
+        Some(Cow::Borrowed(plx_os::i18n::msg::settings_title()))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {

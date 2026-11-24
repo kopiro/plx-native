@@ -139,6 +139,21 @@ impl ControlSlot {
     pub fn enabled(self, idx: i32) -> bool {
         match self { Self::Discs(controls) => controls.enabled(idx), _ => (0..self.items()).contains(&idx) }
     }
+    /// **The word that names item `idx` of a stand-in's row in an accessibility id**
+    /// (`player.control.skip`): the Skip pill is `skip`, beside the Watch cancel of the automatic
+    /// prompt (`watch`, then `skip`); Up Next's pair is `watch_credits` and `next_episode`. `None`
+    /// for the discs, whose controls are named by their command (`HudCommand::a11y_word`), and for an
+    /// index the row does not have. Static text, a name in the id grammar.
+    pub fn a11y_word(self, idx: i32) -> Option<&'static str> {
+        match (self, idx) {
+            (ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_), 0) => Some("watch_credits"),
+            (ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_), 1) => Some("next_episode"),
+            (ControlSlot::Skip(pr), 0) if pr.automatic => Some("watch"),
+            (ControlSlot::Skip(pr), 1) if pr.automatic => Some("skip"),
+            (ControlSlot::Skip(_), 0) => Some("skip"),
+            _ => None,
+        }
+    }
     /// The command a press of item `idx` performs, when the row holds the discs. A stand-in's
     /// items (the Skip pill, the Up Next pair) are app-owned and carry no [`HudCommand`](super::command::HudCommand): what
     /// they do depends on the segment they offer.
@@ -528,10 +543,24 @@ pub struct FailureReadout {
     pub(super) footer: CString,
 }
 
+/// **The word that names a failure read-out's action in an accessibility id**
+/// (`player.failure.try_again`): static text, a name in the id grammar, one per action (a read-out
+/// offers each action at most once, so the word is unique in its row).
+pub fn failure_action_word(a: plx_media::player::FailureAction) -> &'static str {
+    use plx_media::player::FailureAction as A;
+    match a {
+        A::PlayAutomatically => "play_automatically",
+        A::TryAgain => "try_again",
+        A::ChangeQuality => "change_quality",
+        A::Repair => "repair",
+        A::Back => "back",
+    }
+}
+
 /// A control's label. Sentence case, as every `StatusOverlay` row is (the sign-in read-out's *Try
 /// again*): these are capsule buttons, not the ALL-CAPS clickable TEXT marks.
 pub fn failure_action_label(a: plx_media::player::FailureAction) -> &'static std::ffi::CStr {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     use plx_media::player::FailureAction as A;
     match a {
         A::PlayAutomatically => msg::widgets_failure_play_auto_c(),
@@ -558,21 +587,21 @@ fn failure_glyph(kind: plx_media::player::FailureKind) -> plx_ui::icons::Icon {
 impl FailureReadout {
     /// Pure projection of the app's complete failure snapshot, including the repair status.
     pub fn captured(mut e: plx_media::player::ErrorShape, actions: Vec<plx_media::player::FailureAction>,
-        support: String, repair_status: plx_platform::tv::sandbox::State) -> Self {
+        support: String, repair_status: plx_os::tv::native_video::State) -> Self {
         if e.kind == plx_media::player::FailureKind::JailMissingRtkmem {
-            use plx_platform::tv::sandbox::State;
+            use plx_os::tv::native_video::State;
             match repair_status {
                 State::Idle => {}
                 State::Running => {
-                    e.readout = plx_platform::i18n::msg::widgets_repair_running();
-                    e.detail = plx_platform::i18n::msg::widgets_repair_wait().into();
+                    e.readout = plx_os::i18n::msg::widgets_repair_running();
+                    e.detail = plx_os::i18n::msg::widgets_repair_wait().into();
                 }
                 State::Repaired => {
-                    e.readout = plx_platform::i18n::msg::widgets_repair_completed();
-                    e.detail = plx_platform::i18n::msg::widgets_repair_reopen().into();
+                    e.readout = plx_os::i18n::msg::widgets_repair_completed();
+                    e.detail = plx_os::i18n::msg::widgets_repair_reopen().into();
                 }
                 State::Failed(reason) => {
-                    e.readout = plx_platform::i18n::msg::widgets_repair_failed();
+                    e.readout = plx_os::i18n::msg::widgets_repair_failed();
                     e.detail = repair_failure_message(reason).into();
                 }
             }
@@ -598,7 +627,7 @@ impl FailureReadout {
         let policy = e.kind == FailureKind::PlaybackPolicy && !e.detail.is_empty();
         let reason: &str = if policy { &e.detail } else { e.readout };
         let note: Option<String> = if e.no_pass {
-            Some(plx_platform::i18n::msg::widgets_failure_no_pass(PLEX_PASS))
+            Some(plx_os::i18n::msg::widgets_failure_no_pass(PLEX_PASS))
         } else if policy || e.detail.is_empty() {
             None
         } else {
@@ -697,16 +726,16 @@ pub fn failure_row_drawn(busy: Busy) -> bool {
 }
 
 /// Product copy is resolved here; the worker's technical error identity stays unchanged.
-fn repair_failure_message(reason: plx_platform::tv::sandbox::Failure) -> &'static str {
-    use plx_platform::tv::sandbox::Failure;
+fn repair_failure_message(reason: plx_os::tv::native_video::Failure) -> &'static str {
+    use plx_os::tv::native_video::Failure;
     match reason {
-        Failure::StartFailed => plx_platform::i18n::msg::widgets_repair_start_failed(),
-        Failure::HbcUnavailable => plx_platform::i18n::msg::widgets_repair_hbc_unavailable(),
-        Failure::NotRoot => plx_platform::i18n::msg::widgets_repair_not_root(),
-        Failure::CommandFailed => plx_platform::i18n::msg::widgets_repair_command_failed(),
-        Failure::Timeout => plx_platform::i18n::msg::widgets_repair_timeout(),
-        Failure::Unreadable => plx_platform::i18n::msg::widgets_repair_unreadable(),
-        Failure::Unsupported => plx_platform::i18n::msg::widgets_repair_unsupported(),
+        Failure::StartFailed => plx_os::i18n::msg::widgets_repair_start_failed(),
+        Failure::HbcUnavailable => plx_os::i18n::msg::widgets_repair_hbc_unavailable(),
+        Failure::NotRoot => plx_os::i18n::msg::widgets_repair_not_root(),
+        Failure::CommandFailed => plx_os::i18n::msg::widgets_repair_command_failed(),
+        Failure::Timeout => plx_os::i18n::msg::widgets_repair_timeout(),
+        Failure::Unreadable => plx_os::i18n::msg::widgets_repair_unreadable(),
+        Failure::Unsupported => plx_os::i18n::msg::widgets_repair_unsupported(),
     }
 }
 

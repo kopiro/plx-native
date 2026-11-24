@@ -31,6 +31,7 @@ fn step(owner: &mut SessionMachine, event: SessionEvent) -> Vec<SessionFx> {
         tick: Tick::default(),
         measure: &plx_machine::machine::BareMeasure,
         press: Default::default(),
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         focus: Default::default(),
         owner: InputOwner::Entry(EntryId(0)),
     };
@@ -42,7 +43,7 @@ fn step(owner: &mut SessionMachine, event: SessionEvent) -> Vec<SessionFx> {
         .map(|effect| match effect.fx {
             Fx::App(effect) => effect,
             Fx::Nav(_) | Fx::Mount(_) | Fx::Unmount(_) | Fx::Deliver(..) | Fx::Timer { .. }
-            | Fx::CancelTimer(_) | Fx::Press(_) | Fx::Remember { .. } | Fx::Log(_) => panic!("Session emitted a non-domain effect"),
+            | Fx::CancelTimer(_) | Fx::Press(_) | Fx::Remember { .. } | Fx::HoldHint(_) | Fx::Log(_) => panic!("Session emitted a non-domain effect"),
         })
         .collect()
 }
@@ -846,7 +847,7 @@ fn fail_naming(owner: &mut SessionMachine, message: &str, account: Option<&str>)
 /// another reason, not after a later failure that has none.
 #[test]
 fn the_account_name_reaches_the_publication_only_for_the_no_servers_read_out() {
-    let no_servers = plx_platform::i18n::msg::browse_auth_no_servers();
+    let no_servers = plx_os::i18n::msg::browse_auth_no_servers();
     let mut owner = signing_in();
     fail_naming(&mut owner, no_servers, Some("Zebediah Quux"));
     assert_eq!(owner.read().0.account.as_deref(), Some("Zebediah Quux"));
@@ -868,7 +869,7 @@ fn the_account_name_reaches_the_publication_only_for_the_no_servers_read_out() {
 fn the_account_name_is_absent_from_every_report_effect_and_digest() {
     const NAME: &str = "Zebediah-Quux-7741";
     let mut owner = signing_in();
-    let effects = fail_naming(&mut owner, plx_platform::i18n::msg::browse_auth_no_servers(), Some(NAME));
+    let effects = fail_naming(&mut owner, plx_os::i18n::msg::browse_auth_no_servers(), Some(NAME));
     assert_eq!(owner.read().0.account.as_deref(), Some(NAME), "the screen does get it");
 
     let offer = offer(&owner).expect("the failure is held as an incident");
@@ -892,7 +893,7 @@ fn the_account_name_is_absent_from_every_report_effect_and_digest() {
     let digest = |account: Option<&str>| {
         let mut canon = plx_machine::machine::Canon::new();
         crate::auth::observation::Observation::Login(LoginProgress::Failed {
-            epoch: 1, message: plx_platform::i18n::msg::browse_auth_no_servers().into(),
+            epoch: 1, message: plx_os::i18n::msg::browse_auth_no_servers().into(),
             incident: no_servers_incident(), plaintext: None, account: account.map(str::to_owned),
         }).write(&mut canon);
         canon.finish()

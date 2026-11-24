@@ -66,12 +66,14 @@ seal, not a broad `Copy` bound. See "Machine shape" in `docs/sans-io.md`.
   `media/src/route/{backend_policy,plan,plan_memory}.rs`;
 - `rust-modules/playback-contract/src` and the extracted pure
   `play-uri/src/{uriprobe,uri_protocol,uri_lifecycle,register_ladder,acb_bind,picture_gate}.rs` modules;
-- `rust-modules/platform/src/tv/plane.rs`, the ACB plane's pure `Plane` (its runner `PlaneOwner` is in
-  the same file, so the scan covers it too).
+- `rust-modules/os/src/tv/plane.rs`, the ACB plane's pure `Plane` (its runner `PlaneOwner` is in
+  the same file, so the scan covers it too);
+- `rust-modules/platform-tizen/src/player/machine.rs`, the Tizen URI driver's pure step (events and `now_ms` in,
+  host requests out as typed effects); its executor `driver.rs` holds the `HostPlayer` and is not scanned.
 
 `forks` reads every machine crate whole (`FORK_SCOPE`): all of `data/`, `plex/`, `media/`,
 `session/`, `screens/`, `ui/`, `appkit/`, `machine/`, `playback-contract/`, `play-uri/`,
-`play-feed/` and `media-codecs/`. `platform/` is not in it: it holds forks that are not ledgered, so
+`play-feed/` and `media-codecs/`. `os/` is not in it: it holds forks that are not ledgered, so
 `plane.rs` is scanned for workers and globals only.
 
 The scan is by file; an entry is a site to classify, not proof that its enclosing function is a
@@ -343,3 +345,7 @@ in `.empryo/reviews/step8-integration-2026-11-13.md`; no recovery is implied by 
 7. A command that needs an input and lacks it is refused (assert plus log), not defaulted.
 8. `git diff ci/allow tests/test_harness.py` shows only deleted lines, lowered counts, or such a
    one-for-one rename.
+9. A lifecycle is one field with one writer. Before adding a `bool` or an `Option` beside a phase,
+   name the state it adds; before testing `rows.is_empty()` or `!flag` as a stand-in for a state,
+   test the state. `docs/implicit-machines-audit-2026-11-16.md` lists the lifecycles that are still
+   loose flags and the defects that shape produced: read the row of the type you are about to touch.

@@ -65,6 +65,7 @@ use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
     LogicalState, Machine, NavOp,
 };
+use plx_ui::a11y::{A11y, A11yPath, Role};
 use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step, Stop,
@@ -267,6 +268,28 @@ impl ItemRow {
     }
 }
 
+impl ItemRow {
+    /// This row's accessibility name (`itemmenu.<name>`), a static word the way its key is a static
+    /// number. A `ItemRow::Version` is named by its position instead (`itemmenu.version.<n>`).
+    fn a11y_name(self) -> &'static str {
+        match self {
+            ItemRow::GoToItem => "go_to_item",
+            ItemRow::GoToShow => "go_to_show",
+            ItemRow::MarkWatched => "mark_watched",
+            ItemRow::MarkUnwatched => "mark_unwatched",
+            ItemRow::PlayFromStart => "play_from_start",
+            ItemRow::PlayTrailer => "play_trailer",
+            ItemRow::RemoveFromDeck => "remove_from_deck",
+            ItemRow::Play => "play",
+            ItemRow::GoToCatalog => "go_to_catalog",
+            ItemRow::WatchlistRemove => "watchlist_remove",
+            ItemRow::WatchlistAdd => "watchlist_add",
+            ItemRow::PlayVersion => "play_version",
+            ItemRow::Version(_) => "version",
+        }
+    }
+}
+
 impl FormId for ItemRow {
     fn key(&self) -> RowKey {
         RowKey(match self {
@@ -379,10 +402,10 @@ fn build_card(
             // and the episode's own page is what the menu adds
             let ok_opens_show = opens_details && deck_episode_opens_show(m);
             if !opens_details || ok_opens_show {
-                nav.push(go_item(plx_platform::i18n::msg::browse_menu_go_episode()));
+                nav.push(go_item(plx_os::i18n::msg::browse_menu_go_episode()));
             }
             if has_show && !ok_opens_show {
-                nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_show(), &m.show_rk, m.season_index.max(0)));
+                nav.push(go_show(plx_os::i18n::msg::browse_menu_go_show(), &m.show_rk, m.season_index.max(0)));
             }
         }
         // a show or season deck card whose OK opens the page: that page IS the "go to" row's
@@ -390,11 +413,11 @@ fn build_card(
         1 | 2 if opens_details => {}
         // a season has no page of its own — it IS the show page with that season selected, so one
         // row covers it; a show's own page is likewise the only navigation it has
-        2 if has_show => nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_season(), &m.show_rk, m.season_index)),
+        2 if has_show => nav.push(go_show(plx_os::i18n::msg::browse_menu_go_season(), &m.show_rk, m.season_index)),
         2 => {}
-        1 => nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_show(), &m.rk, 0)),
+        1 => nav.push(go_show(plx_os::i18n::msg::browse_menu_go_show(), &m.rk, 0)),
         _ if opens_details => {}
-        _ => nav.push(go_item(plx_platform::i18n::msg::browse_menu_go_movie())),
+        _ => nav.push(go_item(plx_os::i18n::msg::browse_menu_go_movie())),
     }
     // the divider the design groups on — only when there IS a group above it
     let had_nav = !nav.is_empty();
@@ -436,14 +459,14 @@ fn build_card(
         ItemRow::RemoveFromDeck,
         RowKind::Button,
         Action::RemoveFromDeck(m.rk.clone()),
-        Row::new(plx_platform::i18n::msg::browse_menu_remove_deck()).licon(Icon::Close).destructive(true),
+        Row::new(plx_os::i18n::msg::browse_menu_remove_deck()).licon(Icon::Close).destructive(true),
     );
     if let Some(guid) = watchlist_guid {
         sec = sec.item(
             ItemRow::WatchlistRemove,
             RowKind::Button,
             Action::WatchlistRemove(guid.to_string()),
-            Row::new(plx_platform::i18n::msg::watchlist_action_remove()).licon(Icon::Close).destructive(true),
+            Row::new(plx_os::i18n::msg::watchlist_action_remove()).licon(Icon::Close).destructive(true),
         );
     } else {
         // A Watchlist tile's own Remove (above) is the membership row there; everywhere else the
@@ -516,7 +539,7 @@ fn state_rows(
         ItemRow::PlayVersion,
         RowKind::Button,
         Action::ChooseVersion(rk.to_string()),
-        Row::new(plx_platform::i18n::msg::browse_menu_play_version()).licon(Icon::Play),
+        Row::new(plx_os::i18n::msg::browse_menu_play_version()).licon(Icon::Play),
     )
     .item_if(
         playable.is_some(),
@@ -618,7 +641,7 @@ fn build_versions(rk: &str, versions: &[MediaVersion]) -> ItemForm {
     Form::new().section(plx_appkit::version_list::section(versions, ItemRow::Version, |v| Action::PlayVersion {
         rk: rk.to_string(),
         media: v.id,
-    }))
+    }, None))
 }
 
 /// Beside the card, never over it: to its RIGHT by default, flipped to its LEFT when that would run
@@ -844,8 +867,8 @@ impl<H: AppLike + crate::registry::MetadataLike + crate::registry::ScreenInputsL
             ScreenEvent::Mount => {
                 self.build_rows(H::metadata(cx), H::screen_inputs(cx).preference::<plx_plex::plex::session::DeckPressPref>());
                 // The menu is the thing the Home hold hint teaches; once ANY card screen has
-                // opened one the lesson is learned and the hint retires (`ui::hold_hint::learned`).
-                plx_ui::hold_hint::mark_learned();
+                // opened one the lesson retires for this input owner, through its typed effect.
+                fx.push(Fx::HoldHint(plx_machine::machine::HoldHintEvent::Learned));
             }
             ScreenEvent::Tick(tick) => {
                 self.form.table.sel = cx
@@ -955,6 +978,30 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
             elem: self.form.selected_key().map_or_else(|| self.opening(), |k| k.0),
         }
     }
+    /// `itemmenu.<row>`: the menu's [`ItemRow`] names its rows (`ItemRow::a11y_name`; a plain word), the Play
+    /// Version page's one row per version `itemmenu.version.<n>`. The label is the row's drawn
+    /// words (read side only). Every row's `subject` is the ratingKey of the item the menu was opened on
+    /// ([`ItemMenuArg::rk`], captured at open): a row (Play, Mark watched, Remove from Deck, a Watchlist
+    /// write) acts on THAT title, so a press names it. A Catalog menu (a Watchlist tile no server holds)
+    /// has no ratingKey, so its rows carry no subject.
+    fn a11y(&self, key: &u32, _: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let index = self.form.index_of_key(RowKey(*key))?;
+        let path = match *self.form.id_at(index)? {
+            ItemRow::Version(n) => A11yPath::new().name("version").index(usize::from(n)),
+            row => A11yPath::new().name(row.a11y_name()),
+        };
+        let a = A11y::new(path, Role::Row);
+        let a = match plx_ui::geom::table_row(&self.form.table, index) {
+            Some(row) => a.with_label(row.label.as_str()),
+            None => a,
+        };
+        Some(if self.arg.rk.is_empty() { a } else { a.with_subject(self.arg.rk.as_str()) })
+    }
+    fn a11y_elems(&self, g: GroupId, _: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == GroupId(0) {
+            out.extend(self.focusable());
+        }
+    }
 }
 
 impl<H: AppLike + crate::registry::MetadataLike + crate::registry::ScreenInputsLike> Screen<H> for ItemMenuScreen {
@@ -1048,7 +1095,7 @@ impl LogicalState for ItemMenuScreen {
 /// no longer take `testlock::serial()` either: nothing here drives a live `Spring`, so there is no
 /// process-global dirty flag to contend for.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A catalog row of `kind` in a given watch state, with the flags a real `pms::parse_item`
@@ -1816,7 +1863,7 @@ mod tests {
 
     #[test]
     fn translated_action_menus_measure_complete_verbs_and_keep_safe_anchors() {
-        use plx_platform::i18n::{LocaleContext, Preference};
+        use plx_os::i18n::{LocaleContext, Preference};
         use plx_machine::machine::Measure;
         struct MenuMeasure;
         impl Measure for MenuMeasure {
@@ -1828,17 +1875,17 @@ mod tests {
             fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
         }
         let measure = MenuMeasure;
-        for preference in plx_platform::i18n::SHIPPED {
+        for preference in plx_os::i18n::SHIPPED {
             let locale = LocaleContext::resolve(preference, None, None, None, None);
             let mut form: FormTable<ItemRow, Action, Infallible> = FormTable::new(crate::registry::BAND);
             form.table.compact = true;
             form.set(Form::new().section(FormSection::new("")
                 .item(ItemRow::MarkWatched, RowKind::Button, Action::MarkWatched("1".into()),
-                    Row::new(plx_platform::i18n::msg::widgets_action_mark_watched_in(&locale)).licon(Icon::CheckCircleFill))
+                    Row::new(plx_os::i18n::msg::widgets_action_mark_watched_in(&locale)).licon(Icon::CheckCircleFill))
                 .item(ItemRow::MarkUnwatched, RowKind::Button, Action::MarkUnwatched("1".into()),
-                    Row::new(plx_platform::i18n::msg::widgets_action_mark_unwatched_in(&locale)).licon(Icon::MinusCircleFill))
+                    Row::new(plx_os::i18n::msg::widgets_action_mark_unwatched_in(&locale)).licon(Icon::MinusCircleFill))
                 .item(ItemRow::RemoveFromDeck, RowKind::Button, Action::RemoveFromDeck("1".into()),
-                    Row::new(plx_platform::i18n::msg::browse_menu_remove_deck_in(&locale)).licon(Icon::Close))), None);
+                    Row::new(plx_os::i18n::msg::browse_menu_remove_deck_in(&locale)).licon(Icon::Close))), None);
             let table = &form.table;
             let width = table.measured_width(&measure);
             if preference == Preference::Be {
@@ -2018,6 +2065,7 @@ mod tests {
                 ..Default::default()
             },
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             owner: InputOwner::Entry(EntryId(7)),
         })
     }
@@ -2149,7 +2197,8 @@ mod tests {
             };
             with_cx(|cx| {
                 let cx = Cx { views: &inputs, tick: cx.tick, measure: cx.measure,
-                    focus: Default::default(), press: Default::default(), owner: cx.owner };
+                    focus: Default::default(), press: Default::default(), owner: cx.owner,
+                    modal: cx.modal, page_image: cx.page_image, hold_hint: cx.hold_hint };
                 let mut out = Vec::new();
                 let mut present = plx_machine::present::Present::new();
                 let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(8)), &mut present);
@@ -2175,12 +2224,27 @@ mod tests {
     /// mount is the one door every presenter goes through, so the lesson is marked there.
     #[test]
     fn mounting_the_menu_retires_the_hold_hint() {
-        plx_ui::hold_hint::reset_learned_for_test();
+        let mut read = plx_machine::machine::HoldHintRead::default();
         let mut screen = ItemMenuScreen::new(EntryId(7), card_arg(&item(0, PosterMark::None), false));
-        assert!(!plx_ui::hold_hint::learned());
-        step_ev(&mut screen, &ScreenEvent::Mount);
-        assert!(plx_ui::hold_hint::learned());
-        plx_ui::hold_hint::reset_learned_for_test();
+        assert!(!read.learned);
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        let mut fx = Effects::new(&mut out,
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(8)), &mut present);
+        with_cx(|cx| {
+            let context = Cx { views: cx.views, tick: cx.tick, measure: cx.measure,
+                focus: Default::default(), press: Default::default(), owner: cx.owner,
+                modal: cx.modal, page_image: cx.page_image, hold_hint: read };
+            <ItemMenuScreen as Machine<HostFixture>>::step(&mut screen, &ScreenEvent::Mount, &context, &mut fx);
+        });
+        drop(fx);
+        let events: Vec<_> = out.iter().filter_map(|effect| match &effect.fx {
+            plx_machine::machine::Fx::HoldHint(event) => Some(*event),
+            _ => None,
+        }).collect();
+        assert_eq!(events, vec![plx_machine::machine::HoldHintEvent::Learned]);
+        for event in events { read.apply(event); }
+        assert!(read.learned);
     }
 
     fn extra() -> plx_data::metadata::Extra {
@@ -2315,7 +2379,7 @@ mod tests {
     /// whole-pixel advances. No row carries server text; the parent title only rides an action.
     #[test]
     fn every_action_row_fits_the_widest_panel_in_every_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         // The panel hugs its content, so it always fits itself; the widest it may ever grow to
         // ([`MENU_MAX_W`], the shared cap) is the width a verb can actually be held to.
         let widest = MENU_MAX_W;
@@ -2471,7 +2535,7 @@ mod tests {
     #[test]
     fn the_catalog_menus_go_row_names_the_kind() {
         use plx_data::watchlist::model::{Kind, TileState};
-        let _guard = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _guard = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let label = |kind| {
             let menu = built(super::build_catalog(TileState::Available, kind, "42", "plex://movie/abc", plx_data::catalog::Membership::On));
             menu.0.table.sections.iter().flat_map(|s| s.rows.iter()).next().map(|r| r.label.to_string())
@@ -2483,7 +2547,7 @@ mod tests {
     #[test]
     fn the_catalog_menu_fits_in_every_language() {
         use plx_data::watchlist::model::TileState;
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
         let mut out = Vec::new();
         for language in SHIPPED {
@@ -2499,5 +2563,141 @@ mod tests {
             }
         }
         plx_ui::table::assert_no_fit_failures(&out);
+    }
+
+    /// A leaf with three versions, its card menu built (so Play Version is a row).
+    fn leaf_menu_with_versions() -> ItemMenuScreen {
+        let m = versioned(3);
+        let mut s = ItemMenuScreen::new(EntryId(7), card_arg(&m, false));
+        s.built = true;
+        s.form.set(build_card(&m, false, DeckPress::Play, None, None, None), None);
+        s
+    }
+
+    /// Press Play Version: the menu's second page, one row per version.
+    fn open_play_version_page(s: &mut ItemMenuScreen) {
+        let choose = first_action(s, |a| matches!(a, Action::ChooseVersion(_)));
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        let mut fx = Effects::new(
+            &mut out,
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(8)),
+            &mut present,
+        );
+        s.activate::<HostFixture>(choose, &mut fx);
+    }
+
+    /// The item menu on a leaf with versions, both pages (the rows, then Play Version's), run
+    /// through the id conformance (`AppArg::ItemMenu`; the coverage table calls this).
+    pub(crate) fn item_menu_conforms() -> plx_ui::a11y::Namespaces {
+        let mut s = leaf_menu_with_versions();
+        let mut namespaces = vec![with_cx(|cx| plx_ui::a11y::conform::<HostFixture, _>(&s, cx))];
+        open_play_version_page(&mut s);
+        namespaces.push(with_cx(|cx| plx_ui::a11y::conform::<HostFixture, _>(&s, cx)));
+        namespaces
+    }
+
+    /// **The accessibility ids:** every row a menu can show is named by its `ItemRow` (the menu is
+    /// `itemmenu.<row>`), the Play Version page's rows by position (`itemmenu.version.<n>`), and
+    /// the whole view conforms: every row projects, the ids are unique, and each id finds its row.
+    #[test]
+    fn rows_are_named_by_their_item_row_and_conform() {
+        use plx_ui::a11y::A11yPath;
+        use plx_ui::a11y::conform;
+        let mut s = leaf_menu_with_versions();
+        with_cx(|cx| {
+            conform::<HostFixture, _>(&s, cx);
+            let play = A11yPath::parse_relative("play_version").expect("a plain row name");
+            let key = Focusable::<HostFixture>::a11y_find(&s, &play, cx).expect("a leaf with two versions offers Play Version");
+            assert_eq!(key, ItemRow::PlayVersion.focus_key());
+            let a = Focusable::<HostFixture>::a11y(&s, &key, cx).unwrap();
+            assert_eq!(a.role, plx_ui::a11y::Role::Row);
+            assert!(a.label.is_some_and(|l| !l.is_empty()), "the row's drawn words");
+        });
+
+        open_play_version_page(&mut s);
+        with_cx(|cx| {
+            conform::<HostFixture, _>(&s, cx);
+            for n in 0..2u16 {
+                let id = A11yPath::parse_relative(&format!("version.{n}")).unwrap();
+                let key = Focusable::<HostFixture>::a11y_find(&s, &id, cx).expect("one row per version");
+                assert_eq!(key, ItemRow::Version(n).focus_key());
+            }
+        });
+    }
+
+    /// Every row's `(id, subject)` of the menu as it stands, in listing order.
+    fn row_subjects(s: &ItemMenuScreen) -> Vec<(String, Option<String>)> {
+        with_cx(|cx| {
+            let mut keys = Vec::new();
+            Focusable::<HostFixture>::a11y_elems(s, GroupId(0), cx, &mut keys);
+            keys.iter()
+                .map(|key| {
+                    let a = Focusable::<HostFixture>::a11y(s, key, cx).expect("a bound row projects");
+                    (a.path.to_string(), a.subject.map(|c| c.into_owned()))
+                })
+                .collect()
+        })
+    }
+
+    /// **A row names the title it acts on.** Play, Mark watched, Remove from Deck and the Watchlist rows
+    /// all act on the item the menu was opened on, so a harness press (`press:itemmenu.<row>@<rk>`) has
+    /// something to compare: every row carries the menu's own ratingKey as its subject, on every kind of
+    /// menu and on the Play Version page too, and a Catalog menu (no ratingKey: its title is a Watchlist
+    /// guid no server holds) carries none rather than a made-up one.
+    #[test]
+    fn every_row_names_the_menus_item_as_its_subject() {
+        let mut card = leaf_menu_with_versions();
+        let rows = row_subjects(&card);
+        assert!(rows.len() >= 3, "the menu has rows: {rows:?}");
+        for (id, subject) in &rows {
+            assert_eq!(subject.as_deref(), Some("42"), "{id}");
+        }
+        open_play_version_page(&mut card);
+        let versions = row_subjects(&card);
+        assert!(versions.iter().any(|(id, _)| id == "version.0"), "{versions:?}");
+        for (id, subject) in &versions {
+            assert_eq!(subject.as_deref(), Some("42"), "{id}");
+        }
+
+        let arg = |rk: &str, kind: ItemMenuKind| ItemMenuArg {
+            sid: plx_plex::plex::ServerId::from_raw(3),
+            rk: rk.into(),
+            kind,
+            host: EntryId(1),
+            focus: None,
+            anchor: [0; 4],
+            loaded_episode: false,
+            from_home: false,
+            catalog: None,
+            watchlist: None,
+        };
+        let mut strip = ItemMenuScreen::new(
+            EntryId(8),
+            arg("77", ItemMenuKind::Episode { mark: PosterMark::None, versions: Vec::new() }),
+        );
+        let mut tab = ItemMenuScreen::new(
+            EntryId(8),
+            arg("season-9", ItemMenuKind::Season { mark: PosterMark::None, show_rk: "show-1".into(), index: 4 }),
+        );
+        for (menu, want) in [(&mut strip, "77"), (&mut tab, "season-9")] {
+            menu.build_rows(test_store().view(), DeckPress::Play);
+            let rows = row_subjects(menu);
+            assert!(!rows.is_empty());
+            for (id, subject) in &rows {
+                assert_eq!(subject.as_deref(), Some(want), "{id}");
+            }
+        }
+
+        let mut catalog = ItemMenuScreen::new(
+            EntryId(8),
+            arg("", ItemMenuKind::Catalog { state: plx_data::watchlist::model::TileState::NotOnAnyServer }),
+        );
+        catalog.build_rows(test_store().view(), DeckPress::Play);
+        let rows = row_subjects(&catalog);
+        assert!(!rows.is_empty());
+        for (id, subject) in &rows {
+            assert_eq!(*subject, None, "{id}: a Catalog menu has no ratingKey to name");
+        }
     }
 }
