@@ -6,6 +6,9 @@
   or runs pull request code and holds nothing but `actions: write`;
 * the nightly's and the release candidate's Sentry debug-file upload is skipped on a pull
   request's dry run and nowhere else (a release, the schedule and a dispatched dry run keep it);
+* every shipped build creates its Sentry release with its commits, under the name the binary
+  reports, without ever failing the build, and each publishing workflow finalizes it and records
+  the deploy only once the package is really out (`SentryReleases`);
 * the tests against the bundled FFmpeg and libass run in a job of their own, beside the replays,
   and still run;
 * the host FFmpeg and libass builds in the simulator jobs are CACHED where the build scripts really
@@ -85,6 +88,64 @@ class CacheCleanup(unittest.TestCase):
         self.assertIn("--delete", body)
 
 
+class PullfrogIssueTriage(unittest.TestCase):
+    def test_issue_events_and_manual_backfill_use_sponsored_triage(self):
+        caller = code("issue-labels.yml")
+        self.assertIn("types: [opened, reopened, edited]", caller)
+        self.assertRegex(caller, r"dry_run:\n(?:        .*\n)*?        default: true")
+        self.assertIn('"$DRY_RUN" != true && "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH"', caller)
+        self.assertIn('select "$ISSUE" --only-if-unlabeled', caller)
+        self.assertIn("uses: ./.github/workflows/triage-issue.yml", caller)
+        self.assertNotIn("issues: write", caller)
+        self.assertIn("issue_comment:\n    types: [created]", caller)
+        self.assertIn("vars.PLXNATIVE_ISSUE_SUPPORT == 'public' && !github.event.issue.pull_request", caller)
+        self.assertIn("github.event.comment.user.id == github.event.issue.user.id", caller)
+        self.assertIn("(vars.PLXNATIVE_ISSUE_SUPPORT || 'shadow')", caller)
+        self.assertNotIn("discussion_comment:", caller)
+        self.assertIn("group: issue-triage-${{ inputs.number }}", code("triage-issue.yml"))
+
+    def test_model_token_is_read_only_and_the_apply_job_cannot_run_in_a_dry_run(self):
+        classify = job_body("triage-issue.yml", "classify")
+        self.assertIn("issues: read", classify)
+        self.assertNotIn("issues: write", classify)
+        self.assertEqual(classify.count("uses: ./.github/actions/classify-issue"), 2)
+        self.assertIn("if: steps.initial.outcome == 'failure'", classify)
+        self.assertIn("revision: ${{ steps.prepare.outputs.revision }}", classify)
+        self.assertIn("conversation: ${{ steps.prepare.outputs.conversation }}", classify)
+        self.assertIn('apply "$ISSUE" --dry-run', classify)
+        apply = job_body("triage-issue.yml", "apply")
+        self.assertIn("!inputs.dry_run && needs.classify.outputs.eligible == 'true'", apply)
+        self.assertIn("issues: read", apply)
+        self.assertNotIn("issues: write", apply)
+        self.assertIn("ISSUE_REVISION: ${{ needs.classify.outputs.revision }}", apply)
+        self.assertIn("SUPPORT_CONVERSATION: ${{ needs.classify.outputs.conversation }}", apply)
+        self.assertNotIn("classify-issue", apply)
+        self.assertNotIn("PULLFROG_WRITE_TOKEN", classify)
+        self.assertIn("id-token: write", apply)
+        self.assertRegex(apply, r"uses: pullfrog/pullfrog/get-installation-token@[0-9a-f]{40}\b")
+        self.assertIn("PULLFROG_FORCE_LOCAL_CLI: '1'", apply)
+        self.assertIn("if: inputs.comment_id == 0 || needs.classify.outputs.result != ''", apply)
+        self.assertIn("PULLFROG_WRITE_TOKEN: ${{ steps.pullfrog_write.outputs.token }}", apply)
+        action = (ROOT / ".github/actions/classify-issue/action.yml").read_text()
+        self.assertIn("GH_TOKEN: ${{ github.token }}", action)
+        self.assertIn("push: disabled", action)
+        self.assertIn("shell: disabled", action)
+        self.assertNotIn("secrets.", action)
+        self.assertRegex(action, r"uses: pullfrog/pullfrog@[0-9a-f]{40}\b")
+        self.assertIn("PULLFROG_FORCE_LOCAL_CLI: '1'", action)
+
+    def test_console_entry_point_retains_dispatch_without_provider_secrets_or_push_access(self):
+        workflow = code("pullfrog.yml")
+        self.assertRegex(workflow, r"(?m)^on:\n  workflow_dispatch:")
+        self.assertIn("prompt: ${{ inputs.prompt }}", workflow)
+        self.assertIn("push: disabled", workflow)
+        self.assertIn("persist-credentials: false", workflow)
+        self.assertIn("PULLFROG_FORCE_LOCAL_CLI: '1'", workflow)
+        self.assertNotIn("secrets.", workflow)
+        for ref in re.findall(r"uses: \S+@([^\s]+)", workflow):
+            self.assertRegex(ref, r"^[0-9a-f]{40}$")
+
+
 class SentryUpload(unittest.TestCase):
     def test_only_a_pull_requests_nightly_run_skips_the_upload(self):
         nightly = code("nightly.yml")
@@ -104,6 +165,78 @@ class SentryUpload(unittest.TestCase):
         self.assertIn("ci/check-debug-files.py", step)
         self.assertLess(step.index("ci/check-debug-files.py"), step.index('"$UPLOAD" != true'))
         self.assertLess(step.index('"$UPLOAD" != true'), step.index("debug-files upload"))
+
+
+class SentryReleases(unittest.TestCase):
+    """Commits, finalize and deploy all fail silently when they are skipped: Sentry still groups
+    the crashes, and only the suspect commits, "resolve in next release" and the regression check
+    quietly stop working."""
+
+    PUBLISHERS = {"release.yml": None,
+                  "rc.yml": "needs.prepare.outputs.dry != 'true'",
+                  "nightly.yml": "${{ needs.plan.outputs.dry != 'true' }}"}
+
+    def step(self):
+        build = code("build-package.yml")
+        return build[build.index("Create the Sentry release and attach its commits"):build.index("webosbrew tooling")]
+
+    def test_the_release_is_created_after_the_package_is_graded_and_never_fails_the_build(self):
+        build = code("build-package.yml")
+        self.assertLess(build.index("Upload debug files to Sentry"), build.index("ELF + packaging assertions"))
+        self.assertLess(build.index("ELF + packaging assertions"),
+                        build.index("Create the Sentry release and attach its commits"))
+        step = self.step()
+        self.assertIn("if: inputs.sentry-release && inputs.upload-debug-files && inputs.flavor != 'debug'", step)
+        self.assertIn("continue-on-error: true", step)
+        self.assertRegex(build, r"sentry-release:\n(?:        .*\n)*?        type: boolean\n        default: false\n")
+
+    def test_only_a_run_that_publishes_creates_the_release(self):
+        self.assertEqual(re.findall(r"sentry-release: (\$\{\{.*)", code("release.yml")),
+                         ["${{ !inputs.rebuild_tag }}"])
+        self.assertIn("sentry-release: ${{ needs.prepare.outputs.dry != 'true' }}", code("rc.yml"))
+        self.assertIn("sentry-release: ${{ needs.plan.outputs.dry != 'true' }}", code("nightly.yml"))
+
+    def test_the_name_is_the_reported_version_and_the_binary_must_carry_it(self):
+        step = self.step()
+        self.assertIn("--print-nightly-label pkg/.build-config", step)
+        self.assertIn("--print-rc pkg/.build-config", step)
+        self.assertIn('release="plxnative@${nightly_label:-$version${rc:+-rc.$rc}}"', step)
+        self.assertLess(step.index('grep -qaF "$release" pkg/plxnative'), step.index("releases new"))
+
+    def test_the_commits_come_from_this_repository_at_the_built_commit(self):
+        step = self.step()
+        self.assertIn('releases set-commits "$release" --commit "$GITHUB_REPOSITORY@$range"', step)
+        # The range starts at the last final release below this version, never at a candidate.
+        self.assertIn("rc.last_release(", step)
+        self.assertIn('range="$base_sha..$head"', step)
+        # The outputs are written once the release exists, so the deploy still runs if only the
+        # commit lookup failed.
+        self.assertLess(step.index('releases new "$release"'), step.index('echo "release=$release"'))
+        self.assertLess(step.index('echo "release=$release"'), step.index("releases set-commits"))
+        build = code("build-package.yml")
+        for out in ("release", "org", "project", "environment"):
+            self.assertIn(f"sentry-{out}: ${{{{ steps.sentry.outputs.{out} }}}}", build)
+            self.assertIn(f"value: ${{{{ jobs.build.outputs.sentry-{out} }}}}", build)
+
+    def test_each_publisher_marks_the_release_shipped_after_publishing(self):
+        for name, cond in self.PUBLISHERS.items():
+            publish = job_body(name, "publish")
+            self.assertEqual(publish.count("uses: ./.github/actions/sentry-deploy"), 1, name)
+            deploy = publish[publish.index("Mark the Sentry release as shipped"):]
+            self.assertLess(publish.index("gh release create") if "gh release create" in publish
+                            else publish.index("Verify what the public downloads"),
+                            publish.index("Mark the Sentry release as shipped"), name)
+            self.assertIn("continue-on-error: true", deploy.split("\n      - ")[0], name)
+            self.assertIn("release: ${{ needs.build.outputs.sentry-release }}", deploy, name)
+            if cond:
+                self.assertIn(f"if: {cond}", deploy.split("\n      - ")[0], name)
+
+    def test_the_action_skips_an_empty_release_and_runs_the_pinned_cli(self):
+        action = (ROOT / ".github/actions/sentry-deploy/action.yml").read_text()
+        self.assertIn("if: inputs.release != ''", action)
+        self.assertIn("npm ci --prefix tools", action)
+        self.assertIn('"$cli" releases finalize "$RELEASE"', action)
+        self.assertIn('"$cli" deploys new --release "$RELEASE" -e "$ENVIRONMENT"', action)
 
 
 class BundledLibrarySymbols(unittest.TestCase):
@@ -193,6 +326,22 @@ class NightlyHomebrewRepository(unittest.TestCase):
         self.assertIn("dist/com.beb.plxnative.nightly.manifest.json", publish.split("gh release create")[1].split("--target")[0])
         self.assertLess(publish.index("gh release create"),
                         publish.index("--pattern com.beb.plxnative.nightly.manifest.json"))
+
+    def test_samsung_is_optional_in_the_shared_nightly(self):
+        publish = job_body("nightly.yml", "publish")
+        self.assertIn("needs: [plan, build, tizen]", publish)
+        self.assertIn("!cancelled() && needs.plan.outputs.skip != 'true' && needs.build.result == 'success'", publish)
+        self.assertIn("needs.tizen.result == 'success'", publish)
+        self.assertIn('"${samsung_assets[@]}"', publish.split("gh release create")[1].split("--target")[0])
+        self.assertIn("dist/tizen-sdl-source.tar", publish)
+        self.assertLess(publish.index("gh release create"), publish.index("cd verify && sha256sum -c nightly-tizen.sha256"))
+        self.assertNotIn("ci/deps.py fetch sdl2", code("build-package.yml"))
+        self.assertIn("args+=(--force-new-nightly)", job_body("nightly.yml", "plan"))
+        for job in ("pages", "prune"):
+            self.assertIn("!cancelled() && needs.publish.result == 'success'", job_body("nightly.yml", job))
+        tizen = job_body("nightly.yml", "tizen")
+        self.assertIn("needs.plan.outputs.dry == 'true' || vars.SAMSUNG_NIGHTLY_PUBLISH == 'true'", tizen)
+        self.assertIn("uses: ./.github/workflows/tizen-package.yml", tizen)
 
     def test_a_nightly_is_released_in_the_nightly_repository_and_tagged_here(self):
         # The release and its assets go to `ci/nightly.py release-repo` with the token scoped to it;

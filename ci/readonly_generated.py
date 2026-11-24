@@ -13,9 +13,9 @@ import re
 from readonly_dependencies import _local_sha, _sha, _json, _manifest_paths, _configs, _workspace_hashes, WORKSPACE_HASHING
 
 CERTIFICATE_PATH = Path(__file__).with_name('proofs') / 'platform-generated-enums.json'
-CERTIFICATE_SHA256 = '39cfebbd3047735fc32cedbb1402f667d623377f91cd89b134667d8d90b7a761'
-SOURCES = ['platform/Cargo.toml', 'platform/src/lib.rs', 'platform/src/i18n/mod.rs',
-           'platform/build.rs', 'platform/build_support/catalog.rs', 'build_support/install_identities.rs',
+CERTIFICATE_SHA256 = '727b8d4fd0e89c1110993343b8a0030645e4fc00759f0c1f4b16f69be3030ab5'
+SOURCES = ['os/Cargo.toml', 'os/src/lib.rs', 'os/src/i18n/mod.rs',
+           'os/build.rs', 'os/build_support/catalog.rs', 'build_support/install_identities.rs',
            'machine/src/lib.rs', 'machine/src/machine.rs']
 GRAMMAR = {'Preference': {'prefix': ['System'], 'catalogue_unit_variants': True},
            'Language': {'catalogue_unit_variants': True, 'suffix': ['Pseudo']}}
@@ -25,35 +25,42 @@ MACHINE_SOURCES = ['571415d64a9885248f852b402153feedd4660acbe03606e4796c59659726
                    '03a6e18f576dcbaff66c3d7405923b155302bfb2996bb373dac115ece055a5bf',
                    'd08b44dbff241962286eb7e1f85897073ba9f2f712a2ba935837f901635369a8',
                    '9b1ffb66c7ba2eb9fdffcb4bcbf0a29cda87a003cce69b16c73567c8bc0a65b0',
-                   'b2794fd0febbbd98febfb45e12fedadcbb58900b02674af7f665bd15adea458d']
+                   'b2794fd0febbbd98febfb45e12fedadcbb58900b02674af7f665bd15adea458d',
+                   'ff378a339f0b4934a4934ab25aa4965a51a27f38d053fe19c1abb382b690ee45',
+                   '1fafb56dcc9f423d7c00fd989a3f11bd21022d64d62d8f71f70e3eb97f6b4975',
+                   '8f46da48c81057c28aa19524d80a585e5aa136bcdd841a1a5359a9f576bbf7b5']
 MACHINE_LIB_SOURCES = ['105afdbb05fb762e6752cef260b6d928b1d828993350aaa71651f96cee0c3188',
                        'c35d39ae620b5607e7035222ab1023799adaf091d6a4f737a847dd70b26c1b36']
 
 
 I18N_SOURCES = ['40a13d07a43c772b10587e510a69502684abfa1f582ce355b22fd935a8c46f45',
-                '2c978e3aa3a9215a2e96ebaec9dd5ae3cf3ee85cf1afb43a36b5f42f17ff4d52']
+                '867bb41013e0016d186e699698c762685325aa02f01ebe92d39797c0a41a37e1',
+                '82ee1803e4a6339772a175da2f256a7d6a313619e242f76f47c345cdd8199e92',
+                '17a2cff5ffb5bf95a46a2a0c12b13c0b7a02c1f7554656fa0f59557b7afca2ec']
 
 def source_hashes(root):
     sources = {p: _local_sha((root / p).read_bytes()) for p in SOURCES}
-    # Reviewed variants add navigation/press facts, inline Canon byte-feed loops, or append
-    # the owned AppCommand declarations. The complete doc-only newtype producer and its ten
-    # u32 invocations, include namespaces and writer contracts remain unchanged.
+    # Reviewed variants add navigation/press facts, Canon loops, owned commands and
+    # effect/presentation contracts outside the generated declarations; the accessibility-id
+    # input (By::Script, InputKind::ById and its tag-9 write_with arm, OkTap) is one more, and the newest
+    # variant is a doc-only correction of FirstInGroupAnimated's arrival note. The doc-only
+    # newtype producer, ten u32 invocations and canonical include namespaces are unchanged.
     if sources['machine/src/machine.rs'] not in MACHINE_SOURCES: raise ValueError('unreviewed machine source')
     sources['machine/src/machine.rs'] = MACHINE_SOURCES
     # Owned-present migration changes sibling/test modules, never the canonical machine child.
     if sources['machine/src/lib.rs'] not in MACHINE_LIB_SOURCES: raise ValueError('unreviewed machine namespace')
     sources['machine/src/lib.rs'] = MACHINE_LIB_SOURCES
-    # Existing consumer variants differ in clock formatting, not include/enum identity.
-    if sources['platform/src/i18n/mod.rs'] not in I18N_SOURCES: raise ValueError('unreviewed include namespace')
-    sources['platform/src/i18n/mod.rs'] = I18N_SOURCES
+    # Existing consumer variants differ in clock formatting, sim cfg or month-name tables, not include/enum identity.
+    if sources['os/src/i18n/mod.rs'] not in I18N_SOURCES: raise ValueError('unreviewed include namespace')
+    sources['os/src/i18n/mod.rs'] = I18N_SOURCES
     return sources
 
 def produce_certificate(root):
     """Review all executable sources on regeneration; catalogue additions need no pin."""
     root = Path(root).resolve()
     hashes = _workspace_hashes(root, _manifest_paths(root))
-    return {'schema': 'plx.readonly.generated-unit-enums.v1', 'package': 'plx_platform',
-            'module': 'platform/src/i18n/mod.rs',
+    return {'schema': 'plx.readonly.generated-unit-enums.v1', 'package': 'plx_os',
+            'module': 'os/src/i18n/mod.rs',
             'include': 'include!(concat!(env!("OUT_DIR"), "/languages.rs"));',
             'sources': source_hashes(root),
             'text_hashing': WORKSPACE_HASHING, 'manifests': hashes['manifests'],
@@ -67,7 +74,8 @@ def produce_certificate(root):
                        'install_identities writes only install_identities.rs, never languages.rs',
                        'PR1366: PressRead identity/live/active and owned-present sibling/test modules; canonical machine child and doc-only u32 newtype producer unchanged',
                        'PR1385: Canon byte-feed loops inlined (impl Canon and canon_tests only, FNV-1a byte stream unchanged); newtype macro and its ten u32 invocations unchanged',
-                       'UI FIFO on PR1385: AppCommandId(u64), AppCommandOutcome and generic AppCommand<F,R> appended after unchanged doc-only newtype producer and its ten u32 invocations; none certified as generated declarations'],
+                       'UI FIFO on PR1385: AppCommandId(u64), AppCommandOutcome and generic AppCommand<F,R> appended after unchanged doc-only newtype producer and its ten u32 invocations; none certified as generated declarations',
+                       'Owned runtime: HoldHintRead/Event, ModalRead, PageImageRead, Cx/Fx projections, AppEffect partition and PresentationAuthority/Receipt added outside the unchanged doc-only newtype macro and ten u32 invocations; Arc-bearing receipts and effect contracts are not certified; canonical include namespace unchanged'],
             'assumptions': __doc__.splitlines()}
 
 
@@ -120,7 +128,7 @@ def provenance(rust_modules_root, source_file):
         root = Path(rust_modules_root).resolve()
         path = Path(source_file)
         if not path.is_absolute(): path = root / path
-        if path.resolve() not in (root / 'platform/src/i18n/mod.rs', root / 'machine/src/machine.rs') or path.is_symlink(): return None
+        if path.resolve() not in (root / 'os/src/i18n/mod.rs', root / 'machine/src/machine.rs') or path.is_symlink(): return None
         cert = json.loads(CERTIFICATE_PATH.read_text(encoding='utf-8'))
         if _sha(_json(cert)) != CERTIFICATE_SHA256 or cert != produce_certificate(root): return None
         for relative in SOURCES:
@@ -141,7 +149,7 @@ def provenance(rust_modules_root, source_file):
 def canonical_child(root, parent, name, child):
     """An include's OUT_DIR belongs to its crate, not a foreign #[path] importer."""
     root = Path(root).resolve()
-    bindings = {root / 'platform/src/i18n/mod.rs': (root / 'platform/src/lib.rs', 'i18n'),
+    bindings = {root / 'os/src/i18n/mod.rs': (root / 'os/src/lib.rs', 'i18n'),
                 root / 'machine/src/machine.rs': (root / 'machine/src/lib.rs', 'machine')}
     expected = bindings.get(Path(child).resolve())
     return expected is None or expected == (Path(parent).resolve(), name)

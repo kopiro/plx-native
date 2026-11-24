@@ -63,6 +63,21 @@ A screen mounted as a modal surface is the same trait with a different `Style`; 
 instantiates the same screens a second time for its own inner stack, which is how one
 `OnboardScreen` mounts twice (§6.2).
 
+## A page reports what it draws that changed under a cover
+
+A glass menu or Sheet freezes the page under it, and the host retakes that snapshot on typed page
+damage (`Present::page_damaged()`, read by `popover::host::begin_frame`; page motion also does once
+every surface is fading), the close's first frame included: a page that returns from under a cover (`Uncover`, `Enter(Restored)`, a focus
+restored onto the key it already holds) should raise none of its own, and one that does it
+unconditionally costs the close a dropped frame. So a page draws from a user setting only if it keeps the value it
+last drew from and compares it at the head of `step`, on whichever event comes first
+(`registry::moved(&mut self.field, now)`, then `fx.invalidate(Provenance::Nav)`): Home, Library,
+Recommended, the collection, person, Search, Detail and Watchlist pages do so for the Under posters
+policy (and Library's sort value line, the Continue Watching press the deck draws). A page that
+reads the catalog or a store compares its revision the same way (Home's `sync_catalog_changed`, the
+Watchlist's `rev`). The collection and person pages are not narrowed yet: both still damage on every
+`Uncover`/`Enter` (over-damage, safe: the host may retake their page when nothing changed).
+
 ## A landing must not move ground somebody is looking at
 
 The Library's seven reported bugs in 2026-09 had one cause, and the shape recurs on every screen
@@ -84,7 +99,22 @@ that mixes async content with a live cursor:
   block that lands late). A restore is only what the reader chose: the engine remembers
   the page's own seats too, so the page keeps their provenance (`LibraryScreen::placed`). Home already has this shape (the hero seats when its action row
   arrives, while focus is still on the strip); Search seats its field, which never arrives async,
-  and Person and Detail keep no self-seat for a landing to strand.
+  and Person keeps no self-seat for a landing to strand. Detail keeps none while a playback driver
+  is composed (Play is its first seat and the landing does not move it); with none composed its
+  first seat, before the item lands, is the watched toggle, which writes to the account once the
+  item is there. The page owns that seat the way the Library owns its grid's
+  (`DetailScreen::provisional`, set by a fresh open's `Enter`): every frame's `reconcile` answers
+  `DetailScreen::default_elem` until the viewer acts at it: a key that moves focus, the pointer
+  moving it, an activation (`activate`: OK or a click) on a landed page, a hold that opens the item
+  menu, or, once the item has landed and the page has placed its seat (focus is on `default_elem`),
+  any key-down, pointer, click, drag or wheel (the Library's rule, since a wheel or a hover on the
+  focused control moves no focus for a `FocusMoved` to report). The item's
+  landing, a later Also available landing and a restore that waits on a season or retires all move the
+  seat by that one rule, so account safety never depends on a restore firing in the landing frame.
+  Before the item lands, and in the landing frame before `reconcile` has moved focus off the toggle,
+  only a focus move ends it: an OK there would let its press commit on the watched toggle, so an OK,
+  a key that moves nothing, a wheel, a drag and a hover on the control already focused leave it the
+  page's.
 - **The grid absorbs an index landing, the page shifts its scroll.** The Library's grid is a
   `cards::Grid` in `ScrollMode::External`: when the focused element's index changes with no
   `FocusMoved` (an insert or reorder before it) the grid moves its pop with the element and

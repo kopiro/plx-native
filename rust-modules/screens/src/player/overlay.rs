@@ -744,6 +744,28 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
         // machine's decisions here and asks for a change through an effect, never by writing them.
         let ps = H::session(cx);
         match ev {
+            ScreenEvent::App(crate::registry::AppMsg::PlayerOverlayTrackRow(row)) => {
+                if !self.seat_track_row(*row) { plx_base::eventlog::log("submenuosc: requested row is absent"); }
+                Handled::Yes
+            }
+            ScreenEvent::App(crate::registry::AppMsg::PlayerOverlayQuality) => {
+                if !self.seat_more_quality() { plx_base::eventlog::log("moreosc: no Quality row"); }
+                Handled::Yes
+            }
+            ScreenEvent::App(crate::registry::AppMsg::PlayerOverlayPick(target)) => {
+                let commit = if let Some(i) = self.resolve_menupick_track(target) {
+                    self.pick_sub_track(H::metadata(cx), i)
+                } else if let Some(row) = self.resolve_menupick_row(target) {
+                    self.pick_track_row(H::metadata(cx), row)
+                } else { None };
+                if let Some(commit) = commit { Self::ask(fx, PlayerReq::CommitTrack(commit)); }
+                else { plx_base::eventlog::log("menupick: target absent or already active — no commit"); }
+                Handled::Yes
+            }
+            ScreenEvent::App(crate::registry::AppMsg::PlayerOverlayRetarget(kind)) => {
+                self.retarget(ps, H::metadata(cx), *kind);
+                Handled::Yes
+            }
             ScreenEvent::Input(input) => {
                 // The dispatcher's `machine::Key` is the four directions plus OK/BACK; the
                 // transport alphabet this ladder turns on lives in `consts::Key`. Preserve the
@@ -954,6 +976,56 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
             Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
             Panel::Timing(_) => FocusKey { entry: self.entry, elem: 0 },
+        }
+    }
+    /// **The ids are the active panel's own** (`TrackMenuPart`, `MoreMenuPart`), which answer for
+    /// their rows; the host qualifies them with this screen's namespace, which is the default
+    /// `Screen::a11y_ns` (there is no override): `name()`, the active panel's `OverlayKind::word()`
+    /// — `menu` for the track menu, `more` for the More panel, `timing` for Timing. A `tracks.…`
+    /// selector therefore finds nothing here; `tracks` is the standalone tracks panel's namespace
+    /// (`tracks_panel.rs`). The part is built fresh for the query, so the projection is
+    /// handed back owning its text. Timing declares no group and so names nothing; `a11y_find`
+    /// stays the default walk over these two, which cannot disagree with them.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<plx_ui::a11y::A11y<'_>> {
+        match &self.panel {
+            Panel::Tracks(p) => {
+                let part = TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP };
+                let row = part.a11y(key, cx)?.into_owned();
+                // A track pick selects the part's streams on the PMS and a search result installs its subtitle on the
+                // item (`TrackRow::writes_title`): those rows name the title playing. The rest of the menu names none.
+                Some(match part.writes_title_at(key).then(|| super::playing_rk(H::session(cx))).flatten() {
+                    Some(rk) => row.with_subject(rk),
+                    None => row,
+                })
+            }
+            Panel::More(p) => {
+                let part = MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP };
+                let row = part.a11y(key, cx)?.into_owned();
+                // A folded Previous, Next or From beginning plays a title: the row names the key its command plays,
+                // read the way the performer reads it (`HudCommand::plays_rk`). A quality rung re-resolves the title
+                // (`super::quality_pick_subject`), a retry of the failed request when the play failed. Every other row
+                // (Stats, a speed) names none.
+                let ps = H::session(cx);
+                use plx_appkit::more_menu::Action;
+                let subject = match part.action_at(key) {
+                    Some(Action::Hud(command)) => command.plays_rk(ps),
+                    Some(Action::SetQuality(_)) => super::quality_pick_subject(ps),
+                    // exhaustive, so a new action cannot reach here without deciding whether it acts on a title
+                    Some(Action::None | Action::ToggleStats | Action::SetSpeed(_) | Action::SendDiagnostics) | None => None,
+                };
+                Some(match subject {
+                    Some(rk) => row.with_subject(rk),
+                    None => row,
+                })
+            }
+            Panel::Timing(_) => None,
+        }
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        match &self.panel {
+            Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.a11y_elems(g, cx, out),
+            Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.a11y_elems(g, cx, out),
+            Panel::Timing(_) => {}
         }
     }
 }

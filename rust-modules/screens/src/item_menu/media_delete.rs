@@ -3,7 +3,7 @@ use super::*;
 use crate::registry::{MediaDeleteRequest, ScreenInputsLike};
 use plx_plex::plex::DeleteResult;
 use plx_ui::decision_alert::{Answers, Choice, DecisionAlert};
-use plx_platform::i18n::msg;
+use plx_os::i18n::msg;
 
 const CANCEL: u32 = 240;
 const DELETE: u32 = 241;

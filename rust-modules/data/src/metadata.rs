@@ -363,11 +363,11 @@ impl CrewRole {
         }
     }
 
-    fn display(self, locale: &plx_platform::i18n::LocaleContext) -> &'static str {
+    fn display(self, locale: &plx_os::i18n::LocaleContext) -> &'static str {
         match self {
-            Self::Director => plx_platform::i18n::msg::browse_crew_director_in(locale),
-            Self::Writer => plx_platform::i18n::msg::browse_crew_writer_in(locale),
-            Self::DirectorWriter => plx_platform::i18n::msg::browse_crew_director_writer_in(locale),
+            Self::Director => plx_os::i18n::msg::browse_crew_director_in(locale),
+            Self::Writer => plx_os::i18n::msg::browse_crew_writer_in(locale),
+            Self::DirectorWriter => plx_os::i18n::msg::browse_crew_director_writer_in(locale),
         }
     }
 }
@@ -453,6 +453,19 @@ impl Dovi {
         bl_present: false,
         rpu_present: false,
     };
+
+    pub fn of_stream(s: &plx_plex::plex::Stream) -> Option<Dovi> {
+        (s.dovi_present != 0).then(|| Dovi {
+            present: true,
+            profile: s.dovi_profile,
+            bl_compat: s.dovi_bl_compat_id,
+            el_present: s.dovi_el_present != 0,
+            level: s.dovi_level,
+            version: Dovi::parse_version(&s.dovi_version),
+            bl_present: s.dovi_bl_present != 0,
+            rpu_present: s.dovi_rpu_present != 0,
+        })
+    }
 
     /// [`Self::version`] back as the dotted string the server sent (`"1.0"`), or `None` when it
     /// sent none. `None` and `Some("0.0")` are different answers and the panel draws only the
@@ -562,7 +575,7 @@ impl Dovi {
     ///
     /// `signal` retains `nodv`'s diagnostic asymmetry: it withholds a Profile-5-style declaration,
     /// but does not suppress a compatible Profile 8 on a supported set. `capability` must be a
-    /// definite [`Supported`](plx_platform::devcaps::dv::DvCapability::Supported), and
+    /// definite [`Supported`](plx_os::devcaps::dv::DvCapability::Supported), and
     /// `video_carries_dv` ([`dv_video_codec`]) closes the old Profile 9 disagreement where the gate
     /// declared AVC and the payload's codec guard silently discarded the node.
     ///
@@ -603,7 +616,7 @@ impl Dovi {
     pub fn presentation(
         &self,
         signal: bool,
-        capability: plx_platform::devcaps::dv::DvCapability,
+        capability: plx_os::devcaps::dv::DvCapability,
         video_carries_dv: bool,
     ) -> DvPresentation {
         if !self.present {
@@ -618,7 +631,7 @@ impl Dovi {
         // Presence of our node enables libpf's DV path even on a television which cannot display
         // it. libplayerAPIs' own platform metadata does not protect that seam, so only this app's
         // affirmative configd result may make the declaration eligible.
-        let declare = capability == plx_platform::devcaps::dv::DvCapability::Supported
+        let declare = capability == plx_os::devcaps::dv::DvCapability::Supported
             && video_carries_dv
             && (signal || !self.base_layer_unusable());
         if !declare || self.profile <= 0 {
@@ -690,13 +703,13 @@ pub enum DvPresentation {
 /// installed decision exactly.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DvDecision {
-    pub capability: plx_platform::devcaps::dv::DvCapability,
+    pub capability: plx_os::devcaps::dv::DvCapability,
     pub presentation: DvPresentation,
 }
 
 impl DvDecision {
     pub const NONE: Self = Self {
-        capability: plx_platform::devcaps::dv::DvCapability::Unknown,
+        capability: plx_os::devcaps::dv::DvCapability::Unknown,
         presentation: DvPresentation::NotDv,
     };
 }
@@ -871,7 +884,7 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-fn is_zero(n: &i64) -> bool {
+pub(crate) fn is_zero(n: &i64) -> bool {
     *n == 0
 }
 
@@ -997,7 +1010,7 @@ impl Extra {
     /// Human subtype for the extras shelf caption, in the UI language. Unknown subtypes read as
     /// the generic extra. The match is on PMS's own subtype names, which are never drawn.
     pub fn caption(&self) -> &'static str {
-        use plx_platform::i18n::msg;
+        use plx_os::i18n::msg;
         match self.subtype.as_str() {
             "trailer" => msg::browse_detail_trailer(),
             "behindTheScenes" => msg::browse_extra_behind_the_scenes(),
@@ -1052,8 +1065,8 @@ impl ExtraContext {
     /// The HUD's word for this kind, in the UI language.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Trailer => plx_platform::i18n::msg::browse_detail_trailer(),
-            Self::Extra => plx_platform::i18n::msg::browse_extra_extra(),
+            Self::Trailer => plx_os::i18n::msg::browse_detail_trailer(),
+            Self::Extra => plx_os::i18n::msg::browse_extra_extra(),
         }
     }
 }
@@ -1561,6 +1574,21 @@ fn convert_ratings(it: &plx_plex::plex::Metadata) -> Vec<Rating> {
     out
 }
 
+/// Ownership of the episode stream facts stored on a show detail page.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum EpisodeStreams {
+    #[default]
+    Unavailable,
+    Loaded(String),
+    /// Old recordings fetched the on-deck episode when one existed and omitted the owner.
+    LegacyOnDeck,
+}
+
+impl EpisodeStreams {
+    fn legacy() -> Self { Self::LegacyOnDeck }
+    fn is_legacy(&self) -> bool { matches!(self, Self::LegacyOnDeck) }
+}
+
 #[derive(Default, Clone)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Detail {
@@ -1634,9 +1662,12 @@ pub struct Detail {
     pub acodec: String, // Media[0].audioCodec
     #[serde(with = "record::float_bits")]
     pub video_fps: f64, // video Stream frameRate (0 = unknown); feeds the Load esInfo
+    /// Episode whose streams were loaded into a show page. Its displayed season may since have changed.
+    #[serde(default = "EpisodeStreams::legacy", skip_serializing_if = "EpisodeStreams::is_legacy")]
+    pub episode_streams: EpisodeStreams,
     // ---- the PRIMARY version's technical fields (plex::Metadata::media_version(None) = Media[0], NOT a
     // best-of pick — a multi-version item has more, and the user chooses among them in the Play Version
-    // picker, by `MediaId`). For a SHOW these are borrowed from its first episode, like the
+    // picker, by `MediaId`). For a SHOW these are borrowed from its hero episode, like the
     // About footer's audio/subtitle lists. `bitrate`/`width`/`height` are unused by the UI today
     // and carried for the video-quality ladder ("26.1 Mbps 4K (Original)").
     pub video_resolution: String, // "4k" | "1080" | "720" | "sd" — the hero's media badge
@@ -1742,6 +1773,29 @@ pub struct Detail {
 }
 
 impl Detail {
+    pub fn show_started(&self) -> bool {
+        self.on_deck.as_ref().is_some_and(|ep| ep.resume_ms > 0 || ep.watched)
+            || self.seasons.iter().any(|s| s.viewed_leaf_count > 0)
+    }
+
+    pub fn resume_episode(&self) -> Option<&Episode> {
+        self.on_deck.as_ref().filter(|_| self.show_started())
+    }
+
+    /// The show hero resumes its underway episode, otherwise it starts the displayed season.
+    pub fn play_episode(&self) -> Option<&Episode> {
+        self.resume_episode().or_else(|| self.episodes.first())
+    }
+
+    /// Older recordings predate the explicit owner and loaded the on-deck episode if present.
+    pub fn stream_episode_key(&self) -> Option<&str> {
+        match &self.episode_streams {
+            EpisodeStreams::Unavailable => None,
+            EpisodeStreams::Loaded(rk) => Some(rk),
+            EpisodeStreams::LegacyOnDeck => self.on_deck.as_ref().map(|e| e.rk.as_str()),
+        }
+    }
+
     /// **The show an episode played from this page belongs to**, which the play queue is built
     /// from so the episodes BEFORE it are in the queue: a show page's own key, a season page's
     /// parent, an episode page's grandparent, empty for anything else (a movie). The `show_rk` field
@@ -1762,8 +1816,8 @@ impl Detail {
     /// (`screens::tracks_panel`) and the Languages column's press gate on the detail page.
     ///
     /// It is `part` rather than `is_show` on purpose. A SHOW container carries no `Media` of its
-    /// own — `parse_streams` backfills its audio/subtitle lists from episode 1 for the About footer
-    /// — so on a show page a track sheet would print episode 1's path, size and bitrate under the
+    /// own — `parse_streams` backfills its audio/subtitle lists from the hero episode for the About footer
+    /// — so on a show page a track sheet would print that episode's path, size and bitrate under the
     /// show's name. That is not a truncation of the truth, it is a different file, and `part` is
     /// exactly the field that is empty when the item has no file of its own ("Media[0].Part[0].key
     /// for a leaf (movie/episode); empty for a show").
@@ -1844,10 +1898,10 @@ impl Detail {
     /// Only the crew array owns job identities. An actor whose server-provided character is
     /// named "Director" must retain that exact character name in every locale.
     pub fn credit_role(&self, i: usize) -> Option<&str> {
-        self.credit_role_in(i, plx_platform::i18n::current())
+        self.credit_role_in(i, plx_os::i18n::current())
     }
 
-    fn credit_role_in(&self, i: usize, locale: &plx_platform::i18n::LocaleContext) -> Option<&str> {
+    fn credit_role_in(&self, i: usize, locale: &plx_os::i18n::LocaleContext) -> Option<&str> {
         let credit = self.credit(i)?;
         if i < self.cast.len() {
             return Some(&credit.role);
@@ -2317,7 +2371,8 @@ fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::Se
         acodec: media0.map(|m| m.audio_codec.clone()).unwrap_or_default(),
         video_fps: 0.0, // set from the video Stream by parse_streams below
         // likewise set by parse_streams (one assignment point), which for a SHOW runs a second
-        // time over its first episode — the show container carries no Media of its own
+        // time over its hero episode — the show container carries no Media of its own
+        episode_streams: EpisodeStreams::Unavailable,
         video_resolution: String::new(),
         width: 0,
         height: 0,
@@ -2374,7 +2429,7 @@ fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::Se
         version_parts: Vec::new(),
     };
     // audio/subtitle streams (movies carry Media/Part/Stream; a show does not — its
-    // episodes do, so load_detail backfills a show's streams from its first episode).
+    // episodes do, so load_detail backfills a show's streams from its hero episode).
     parse_streams(&it, &mut d);
     Some((d, it.primary_extra_key.clone()))
 }
@@ -2527,17 +2582,8 @@ fn convert_streams(streams: &[plx_plex::plex::Stream]) -> Streams {
                 // so this costs nothing and is not a change to any measured behaviour — it is the
                 // one assignment here whose failure is silent and wrong rather than silent and
                 // cosmetic.
-                if s.dovi_present != 0 {
-                    dovi = Dovi {
-                        present: true,
-                        profile: s.dovi_profile,
-                        bl_compat: s.dovi_bl_compat_id,
-                        el_present: s.dovi_el_present != 0,
-                        level: s.dovi_level,
-                        version: Dovi::parse_version(&s.dovi_version),
-                        bl_present: s.dovi_bl_present != 0,
-                        rpu_present: s.dovi_rpu_present != 0,
-                    };
+                if let Some(record) = Dovi::of_stream(s) {
+                    dovi = record;
                 }
                 // The video track ITSELF, kept rather than reduced to `fps`/`hdr`/`dovi`. It is the
                 // only place the stream's own bitrate, profile, bit depth and chroma survive, and
@@ -2648,7 +2694,7 @@ mod convert_streams_tests {
 /// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer), plus that
 /// same version's technical fields (resolution/size/bitrate — the hero's media badge). Both ride
 /// the ONE version (see `plex::Metadata::media_version`), and both are borrowed from a show's
-/// first episode by the same call in `fetch_item_streams`, so they can't describe different files.
+/// hero episode by the same call in `backfill_episode`, so they can't describe different files.
 fn parse_streams(it: &plx_plex::plex::Metadata, d: &mut Detail) {
     d.version_parts = if crate::pms::versions_of(it).is_empty() { Vec::new() } else { version_parts_of(it) };
     if let Some(m) = it.media_version(None).map(|(_, m)| m) {
@@ -2723,6 +2769,7 @@ pub struct PlayingItem {
     /// stream's rate—when deciding whether a remote connection has enough headroom to carry the
     /// original file, because the transport also has to carry audio and container overhead.
     pub bitrate: i64,
+    pub video_kbps: i64,
     /// The played leaf's Dolby Vision layering — the direct-play gate's other refusal, beside the
     /// frame size above and for the same reason: the local fallback never asks PMS, so a file
     /// whose base layer we cannot display correctly (Profile 5, or a dual layer the feed path does
@@ -2754,6 +2801,7 @@ impl PlayingItem {
             width: 0,
             height: 0,
             bitrate: 0,
+            video_kbps: 0,
             dovi: Default::default(),
             markers: Vec::new(),
             chapters: Vec::new(),
@@ -2803,6 +2851,7 @@ fn cached_playing(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str
             width: d.width,
             height: d.height,
             bitrate: d.bitrate,
+            video_kbps: d.video.as_ref().map_or(0, |v| v.bitrate),
             dovi: d.dovi,
             markers: d.markers.clone(),
             chapters: d.chapters.clone(),
@@ -2919,6 +2968,7 @@ fn playing_item_of(
     let st = media
         .and_then(|m| m.part.first().map(|p| convert_streams(&p.stream)))
         .unwrap_or_default();
+    let video_kbps = st.video.as_ref().map_or(0, |v| v.bitrate);
     let (audio, subs, video_fps, dovi, hdr) = (st.audio, st.subs, st.fps, st.dovi, st.hdr);
     let show_rk = it
         .as_ref()
@@ -2942,6 +2992,7 @@ fn playing_item_of(
         width,
         height,
         bitrate,
+        video_kbps,
         dovi,
         markers,
         chapters,
@@ -3392,12 +3443,15 @@ mod lang_matches_tests {
     }
 }
 
-/// fetch one item's full metadata and parse its streams into `d` — used to borrow a
-/// show's first-episode audio/subtitle tracks (the show container carries none).
-fn fetch_item_streams(client: &'static plx_plex::plex::Client, rk: &str, d: &mut Detail) {
-    if let Some(it) = client.metadata(rk) {
-        parse_streams(&it, d);
+/// Install the hero episode's primary stream facts and the complete list of alternate versions.
+fn backfill_episode(d: &mut Detail, rk: String, it: &plx_plex::plex::Metadata) {
+    if it.default_part().is_none() { return; }
+    parse_streams(it, d);
+    let versions = crate::pms::versions_of(it);
+    if d.episodes.position(&rk).and_then(|i| d.episodes.get(i)).is_some_and(|ep| ep.versions != versions) {
+        d.episodes.edit(&rk, |ep| ep.versions = versions);
     }
+    d.episode_streams = EpisodeStreams::Loaded(rk);
 }
 
 fn fetch_seasons(client: &'static plx_plex::plex::Client, rk: &str) -> Vec<Season> {
@@ -3860,16 +3914,18 @@ pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::
             .map(|ep| plx_base::task::beside(s, "detail-hero", move || client.metadata(&ep)));
         if d.is_show {
             load_show_seasons(client, rk, &mut d, prefer);
-            match on_deck {
-                Some(on_deck) => {
-                    if let Some(it) = on_deck.finish() {
-                        parse_streams(&it, &mut d);
-                    }
-                }
-                None => {
-                    if let Some(ep_rk) = d.episodes.first().map(|e| e.rk.clone()) {
-                        fetch_item_streams(client, &ep_rk, &mut d);
-                    }
+            let deck_item = on_deck.and_then(|job| job.finish());
+            if let (Some(ep), Some(it)) = (&mut d.on_deck, &deck_item) {
+                ep.versions = crate::pms::versions_of(it);
+            }
+            if let Some(target) = d.play_episode().map(|e| e.rk.clone()) {
+                let streams = if d.on_deck.as_ref().is_some_and(|ep| ep.rk == target) {
+                    deck_item
+                } else {
+                    client.metadata(&target)
+                };
+                if let Some(it) = streams {
+                    backfill_episode(&mut d, target, &it);
                 }
             }
             // NB `part`/`vcodec`/`acodec` are deliberately NOT backfilled. They are the item's OWN

@@ -59,7 +59,7 @@ mod tests {
             (403, DeleteResult::Forbidden), (404, DeleteResult::Missing),
             (503, DeleteResult::Unavailable), (302, DeleteResult::Unavailable)] {
             let (client, worker) = server(serde_json::json!("1"), Some(status), false);
-            assert_eq!(client.delete_metadata("42", ClientKey::of(&client)), expected);
+            assert_eq!(client.delete_metadata("42", ClientKey::of(&client), || true), expected);
             let requests = worker.join().unwrap();
             assert_eq!(requests.len(), 2);
             assert!(requests[0].starts_with("GET /?X-Plex-Token= "));
@@ -72,7 +72,7 @@ mod tests {
     fn unknown_or_disabled_permission_never_sends_delete() {
         for allow in [serde_json::Value::Null, serde_json::json!(false), serde_json::json!("0")] {
             let (client, worker) = server(allow, None, false);
-            assert_eq!(client.delete_metadata("42", ClientKey::of(&client)), DeleteResult::Forbidden);
+            assert_eq!(client.delete_metadata("42", ClientKey::of(&client), || true), DeleteResult::Forbidden);
             assert_eq!(worker.join().unwrap().len(), 1);
         }
     }
@@ -80,7 +80,14 @@ mod tests {
     #[test]
     fn a_credential_change_during_permission_read_cancels_the_write() {
         let (client, worker) = server(serde_json::json!(true), None, true);
-        assert_eq!(client.delete_metadata("42", ClientKey::of(&client)), DeleteResult::IdentityChanged);
+        assert_eq!(client.delete_metadata("42", ClientKey::of(&client), || true), DeleteResult::IdentityChanged);
+        assert_eq!(worker.join().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn revoking_the_confirmation_after_the_permission_read_cancels_the_write() {
+        let (client, worker) = server(serde_json::json!(true), None, false);
+        assert_eq!(client.delete_metadata("42", ClientKey::of(&client), || false), DeleteResult::IdentityChanged);
         assert_eq!(worker.join().unwrap().len(), 1);
     }
 
@@ -88,25 +95,25 @@ mod tests {
     fn only_one_numeric_rating_key_is_accepted() {
         let client = Client::new(super::super::ServerId::UNSET, "fixture", super::super::Origin::http("127.0.0.1", 9), "", "delete-fixture");
         for key in ["", "1,2", "../1", "42?all=1", "1/2"] {
-            assert_eq!(client.delete_metadata(key, ClientKey::of(&client)), DeleteResult::Forbidden);
+            assert_eq!(client.delete_metadata(key, ClientKey::of(&client), || true), DeleteResult::Forbidden);
         }
         let key = ClientKey::of(&client);
         client.set_token("changed");
-        assert_eq!(client.delete_metadata("42", key), DeleteResult::IdentityChanged);
+        assert_eq!(client.delete_metadata("42", key, || true), DeleteResult::IdentityChanged);
     }
 }
 
 impl Client {
     /// Delete one item and every media version beneath it. A show/season includes its episodes.
-    /// Re-read permission before writing, and bind the write to the confirmation's credential.
-    pub fn delete_metadata(&self, rk: &str, key: ClientKey) -> DeleteResult {
+    /// Re-read permission before writing, then recheck the confirmation's scope and credential.
+    pub fn delete_metadata(&self, rk: &str, key: ClientKey, still_admitted: impl FnOnce() -> bool) -> DeleteResult {
         if rk.is_empty() || !rk.bytes().all(|b| b.is_ascii_digit()) {
             return DeleteResult::Forbidden;
         }
         if ClientKey::of(self) != key { return DeleteResult::IdentityChanged; }
         let Some(root) = self.server_root() else { return DeleteResult::Unavailable; };
         if !root.allow_media_deletion.is_some_and(|v| v != 0) { return DeleteResult::Forbidden; }
-        if ClientKey::of(self) != key { return DeleteResult::IdentityChanged; }
+        if !still_admitted() || ClientKey::of(self) != key { return DeleteResult::IdentityChanged; }
         match self.delete_status(&format!("/library/metadata/{rk}"), key) {
             Some(200..=299) => DeleteResult::Deleted,
             Some(401 | 403) => DeleteResult::Forbidden,

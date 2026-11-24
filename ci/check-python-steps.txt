@@ -13,7 +13,9 @@
 # fails, and each step's whole output is printed when it ends). So a step in this file must:
 #   * write only to a directory it made itself (`mktemp -d`, `tempfile`), never to a fixed path in
 #     /tmp or $TMPDIR, the checkout, `$HOME` or `~/.cache`; and a fixture that edits "the repo" edits
-#     a private copy of it;
+#     a private copy of it. The one exception is `check-c-unit`'s access leg
+#     (ci/access-interpose-test.c): its probe paths are the GPU driver's, fixed by the driver, so it
+#     takes a flock on /tmp;
 #   * bind port 0 (an ephemeral port), never a fixed one;
 #   * not take `tools/check-lock.py`'s real lock (ci/test_check_lock.py uses a throwaway path), not
 #     run cargo, and not assume it is the only `make` running;
@@ -65,6 +67,7 @@ python3 ci/test_disk_budget.py
 # trees; the cold store's unpark of an absent parked tree: the cheap no-gos (config removed, volume unmounted) come before any lock wait, the
 # lock is held to claim the copy and not across it (two trees restore at once), a claimed or dead-claimed tree, and the free-space rule. `make -n` and `make -s print-*` only, no cargo.
 python3 ci/test_disk_preflight.py
+python3 ci/test_build_root.py
 # The TV lock's own protocol suite, with NO television: the device half runs under a local sh in a temp dir, and the
 # HEADS-UP cases run the real `acquire`/`break` as children with their own lane, lease directory and lock path (one
 # line on a new lease, including your own expired one, none on a live renew or a refusal). It also runs the pre-flight's
@@ -155,8 +158,9 @@ python3 ci/nightly.py --selftest
 # with release.yml, the prerelease body) — same reason: a candidate is cut by hand, rarely.
 python3 ci/rc.py --selftest
 # The issue labeler's pure logic (.github/workflows/issue-labels.yml): what survives a model
-# answer, the keyword fallback, `user-report` from the author's association. No network.
+# answer, dry-run output and `user-report` from the author's association. No network.
 python3 ci/label-issue.py --selftest
+python3 ci/test_issue_support.py
 # The two host-side readers of the back-buffer-wait captures, against synthetic traces/JSONL.
 python3 tools/analyze-sched-trace.py --self-test
 python3 tools/analyze-hwcnt-wait.py --self-test
@@ -169,11 +173,13 @@ python3 tools/test_tv_capture_bench.py
 python3 ci/check-package.py --selftest
 # The module-layer gate (docs/module-layers.md): every reference one module makes to another
 # must point DOWN the target crate graph in ci/module-layers.ini, and only the webOS port may
-# name the webOS modules (`[port webos]`), unless it is one of the counted migration entries in
+# name the webOS modules (`[platform webos]`), unless it is one of the counted migration entries in
 # ci/allow/layers.txt, which only shrinks. This is what keeps the module graph from growing new
 # cycles while the crate split is under way, and webOS from spreading. ~3 s, no cargo.
 python3 ci/test_module_graph.py
 python3 ci/check-module-layers.py
+# tools/rename-os-layer.py, Wave R's rename tool: forward, --reverse, --check and --equivalence on synthetic trees and a throwaway git repo. ~1 s, no cargo.
+python3 ci/test_rename_os_layer.py
 # The statics gate (spec §0 done-criterion 1): a static mut under ui/, screens/, appkit/ and the
 # gated data modules must be named in ci/allow/statics.txt or sit in a legacy module still awaiting
 # its phase in ci/allow/statics-migration.txt (a counted list that only shrinks). A static mut that
@@ -186,6 +192,8 @@ python3 ci/test_module_cycle.py
 python3 ci/check-module-cycle.py
 python3 tests/player_pointer.py --selftest
 python3 tests/test_replay_fixtures.py
+# The accessibility-id harness tool (tools/a11y.py): token grammar, state-file wait, id matching.
+python3 tests/test_a11y_tool.py
 python3 tools/prune-gh-caches.py --selftest
 # The demo library and the screenshot scene manifest (make screenshots). Offline: the cases
 # that serve the catalog skip, and say so, where the derived artwork cache is absent.
@@ -345,9 +353,11 @@ python3 ci/gen-third-party-notices.py --check
 # --skip-if-missing only so a runner without Rust is not red here: CI's host-lint job runs it strict.
 python3 ci/test_check_vfp.py
 python3 ci/check-vfp.py --skip-if-missing
-# RUST_INPUTS (the Makefile's hand-kept list of directories whose edits rebuild the app library) must search every crate
-# the app reaches through `path` dependencies: a crate left out is one whose edits `make` never sees, so `make ipk` packages
-# the previous library and says nothing. Reads manifests only, no cargo; the self-test plants a missing crate in a temp tree.
+# RUST_INPUTS (the Makefile's hand-kept list of directories whose edits rebuild the app library) must search the library
+# crate `rust-modules/platform-webos` (the crate `$(RUST_LIB)` is compiled from, which the app does not reach) and every
+# crate that one or the app reaches through `path` dependencies: a crate left out is one whose edits `make` never sees, so
+# `make ipk` packages the previous library and says nothing. Reads manifests only, no cargo; the self-test plants a missing
+# crate in a temp tree.
 python3 ci/test_check_rust_inputs.py
 python3 ci/check-rust-inputs.py
 python3 ci/test_check_machine_writer.py
@@ -356,6 +366,10 @@ python3 ci/check-machine-shape.py
 # or head-moved PR never reaches `gh pr merge` (#387), the polling and backoff, the head-oid race, the verify against a temporary
 # origin, and a planted secret refused before any `gh` call. Real gh JSON as fixtures; temp dirs only, no network, no sleeping on the poll or race timers (one test lets a hung gh hit a 1 s timeout).
 python3 tools/test_pr_land.py
+# tools/review-eval.py (the pr-reviewer agent graded against past pull requests whose bugs are known): the case list's checks, the
+# replayed repository (no ref leads to the fix), the reviewer's task never carrying the answer key, and the score. Temp repositories only;
+# the last class reads the real tools/review-eval/cases.json and skips commits a shallow checkout lacks.
+python3 tools/test_review_eval.py
 python3 .claude/hooks/tv-lock-notify-test.py
 # The custom agents' files (AGENTS.md, "Harness-specific files"): every `.agents/agents/<name>.md` carries a matching frontmatter
 # `name`, an explicit `model:` (one documented exemption), a description, a RELATIVE `.claude/agents/<name>.md` symlink that resolves
@@ -416,8 +430,34 @@ python3 ci/test_readonly_generated.py
 # (one darwin-only test drives the real one); touches no real cache, config or volume.
 python3 ci/test_cold_store.py
 python3 ci/test_verdict_data_captured_inputs_source_oracle.py
+# Current owned hold-hint codec source controls; runtime oracles also execute in the Rust suite.
+python3 tests/test_owned_hold_hint_codec.py
+# Actual App owner declarations and fixture-constructor retirement; negative source controls.
+python3 ci/test_runtime_ownership_contract.py
+# Rust lifetime probes compile extracted production declarations (no cargo or shared artifacts).
+python3 ci/test_runtime_ownership_borrows.py
 # The disk-low hook (.claude/hooks/disk-low-notify.py, PostToolUse + PostToolUseFailure on Bash): its thresholds equal tools/disk-budget.py's
 # constants, the level / throttle / reclaim-dedupe logic on a fake free-space reading and a recording launcher, the text (facts, one line of
 # systemMessage, under the 10,000 character cap), the settings.json registrations, and a real process with a stub standing in for
 # `build-gc.sh --auto` (detached, own session, output in the log). Never starts the real build-gc; temp dirs only; no sleeping on a timer.
 python3 .claude/hooks/disk-low-notify-test.py
+# The PLATFORM build axis (Makefile `PLATFORM`, ci/platform_axis.py --list): default `webos`, the three names accepted from the command line
+# and the environment, anything else refused at parse time, `sim`/`sim-*`/`macapp`/`macapp-zip` implying `desktop` (read from a dry run in a
+# scratch tree, where an explicit value still wins), `print-rust-target` unmoved by it, both new queries leaving a built `pkg/` alone, and
+# that the selector is not named `platform.py`: scripts in ci/ import the stdlib `platform`, so a probe from ci/, every existing consumer and
+# a shadow control are run; and the webOS package goals refused under `PLATFORM=desktop|tizen` (W8b: parse-time, nothing reset, the webOS recipe text
+# unchanged). No cargo; the scratch trees are private temp dirs.
+python3 ci/test_platform_axis.py
+# The platform crates' manifests (W7b, W9): `plx_platform_webos`, `plx_platform_desktop` and `plx_platform_tizen` each forward EVERY feature of the
+# application crate with its defaults (the Tizen crate all but the simulator's `sim`) and name none on the dependency edge (a dependency
+# feature would unify over a whole default pass: the desktop's `sim` would turn it into a simulator pass), with no `version` on it (the
+# certificates refuse one). Manifests only, no cargo.
+python3 ci/test_platform_features.py
+# The Tizen hosted library's contract (W9 E2; mk/platform-tizen.mk, ci/check-tizen-so.py, tizen/package.py, tools/tizen-log-receiver.py): the
+# header/C# parsers and every rule of `tizen-verify` over canned readelf/nm text (each proven RED, so the Linux-only link check is tested on a Mac),
+# the signing refusal (names the missing variables, prints no value), the staging contract and the package check, and the log receiver's
+# sequence bookkeeping. No cargo, no dotnet, no certificate; temp dirs only.
+python3 ci/test_tizen_so_check.py
+python3 ci/test_tizen_package.py
+
+python3 ci/test_tizen_log_stamp.py

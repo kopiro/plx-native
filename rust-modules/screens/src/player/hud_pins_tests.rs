@@ -62,7 +62,7 @@
 
 use super::{test_store, TestHost, ENTRY};
 use crate::player::PlayerScreen;
-use crate::registry::{AppFx, AppMsg, PageMemory, PlayerReq};
+use crate::registry::{AppMsg, PageMemory, PlayerReq};
 use plx_appkit::player_hud::command::{HudCommand, Section};
 use plx_appkit::player_hud::{overscan_rects, slot_for, Busy, ControlSlot, Controls};
 use plx_machine::machine::{
@@ -198,13 +198,24 @@ impl Rig<TestHost> for PinRig {
         Handled::No
     }
     fn timer(&mut self, _: MachineId, _: TimerId, _: &CxParts<u32>, _: &mut Effects<'_, TestHost>) {}
-    fn app_fx(&mut self, from: MachineId, effect: AppFx, _: &CxParts<u32>, fx: &mut Effects<'_, TestHost>) {
-        if let AppFx::Player(req) = effect {
+    fn app_fx(&mut self, _: MachineId, _: crate::registry::InlineAppFx, _: &CxParts<u32>, _: &mut Effects<'_, TestHost>) {}
+    fn run_yielded_app_command(&mut self, d: &mut Dispatcher<TestHost>,
+        report: &mut plx_ui::dispatch::FrameReport, tap: &mut dyn plx_ui::dispatch::Tap<TestHost>) -> Option<u32> {
+        let command = d.take_app_command()?;
+        let outcome = match &command.effect {
+            Ok(_) => plx_machine::machine::AppCommandOutcome::Completed,
+            Err(outcome) => *outcome,
+        };
+        let mut out = vec![];
+        if let Ok(crate::registry::ExternalAppFx::Player(req)) = command.effect {
             if let (true, PlayerReq::Command(HudCommand::ToggleSection(section))) = (self.perform, &req) {
-                fx.push(Fx::Deliver(from, Delivery::Screen(ScreenEvent::App(AppMsg::HudSection(*section)))));
+                out.push(plx_machine::machine::Stamped { from: command.from,
+                    fx: Fx::Deliver(command.from, Delivery::Screen(ScreenEvent::App(AppMsg::HudSection(*section)))) });
             }
             self.reqs.push(req);
         }
+        Some(d.resume_app_command(self, command.id, outcome,
+            out, report, tap).unwrap())
     }
     fn log(&mut self, _: &str) {}
     fn prepare(&mut self, _: &mut Budget, _: &mut Present) {}
@@ -471,6 +482,7 @@ impl Chaptered {
                 width: 0,
                 height: 0,
                 bitrate: 0,
+                video_kbps: 0,
                 dovi: Default::default(),
                 markers: Vec::new(),
                 chapters: (1..=count).map(chapter).collect(),
@@ -583,6 +595,9 @@ fn check_census(case: &Census) {
     let _chapters = case.chapters.then(Chaptered::install);
     let screen = census_screen(case.occupant, case.failed);
     let cx: Cx<'static, TestHost> = super::cx();
+    // whatever the occupant (discs, a Skip pill, Up Next's pair), the open strip or the read-out, every
+    // element the groups below declare has a unique id that finds it again
+    plx_ui::a11y::conformance::<TestHost, _>(&screen, &cx);
     let mut groups: Vec<GroupSpec> = Vec::new();
     Focusable::<TestHost>::groups(&screen, &cx, &mut groups);
     let ids: Vec<u32> = groups.iter().map(|g| g.id.0).collect();
@@ -1980,7 +1995,7 @@ mod sections {
     /// so the way into the page is Down from a tab and the way out is Up off the page (`travel::Order::toward_tabs`).
     fn rising_tabs_run() -> Run {
         let bytes = plx_appkit::hud_format::fixtures::bytes("rising-tabs");
-        let package = plx_appkit::player_hud::loaded::load(&bytes, "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
+        let package = plx_appkit::player_hud::loaded::load(&bytes, "0.0.0-test", plx_os::i18n::english(), &FixtureMeasure)
             .expect("the rising-tabs fixture loads")
             .compiled;
         let mut run = Run::boot_in(Occupant::Plain, package, true);
@@ -2141,7 +2156,7 @@ mod sections {
                 assert!(commands.contains(&HudCommand::ToggleSection(section)), "{policy}: {section:?} folds into More: {commands:?}");
             }
             let labels: Vec<&str> = rows.iter().map(|r| r.label).collect();
-            assert!(labels.contains(&plx_platform::i18n::msg::widgets_player_chapters()) && labels.contains(&plx_platform::i18n::msg::widgets_player_info()), "{labels:?}");
+            assert!(labels.contains(&plx_os::i18n::msg::widgets_player_chapters()) && labels.contains(&plx_os::i18n::msg::widgets_player_info()), "{labels:?}");
 
             // Chapters: open, travel, close
             let mut run = Run::boot_in(Occupant::Plain, package.clone(), true);
@@ -2497,7 +2512,7 @@ mod sections {
         assert_idle_playhead();
         let _chapters = Chaptered::install();
         let bytes = plx_appkit::hud_format::fixtures::bytes("tabs");
-        let tabs = plx_appkit::player_hud::loaded::load(&bytes, "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
+        let tabs = plx_appkit::player_hud::loaded::load(&bytes, "0.0.0-test", plx_os::i18n::english(), &FixtureMeasure)
             .expect("the tabs fixture loads")
             .compiled;
         let mut run = Run::boot_in(Occupant::Plain, tabs, true);
@@ -2694,7 +2709,7 @@ mod sections {
         let _g = plx_base::testlock::serial();
         assert_idle_playhead();
         let bytes = plx_appkit::hud_format::fixtures::bytes("tabs");
-        let tabs = plx_appkit::player_hud::loaded::load(&bytes, "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
+        let tabs = plx_appkit::player_hud::loaded::load(&bytes, "0.0.0-test", plx_os::i18n::english(), &FixtureMeasure)
             .expect("the tabs fixture loads")
             .compiled;
         for (name, package) in [("classic", plx_appkit::player_hud::loaded::classic_for_test()), ("tabs", tabs)] {

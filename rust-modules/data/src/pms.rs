@@ -173,6 +173,9 @@ pub struct PmsMovie {
     /// The first video stream is HDR (HDR10 / HLG / Dolby Vision).
     #[serde(default, skip_serializing_if = "is_false")]
     pub hdr: bool,
+    /// A video stream of the first media carries Dolby Vision (then `hdr` is set too).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dolby_vision: bool,
     /// `audienceRating` (0..10), or `None` when the server sent none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience_rating: Option<f32>,
@@ -255,6 +258,8 @@ pub struct MediaVersion {
     pub id: plx_plex::plex::MediaId,
     /// Whole-file bitrate, kbps.
     pub kbps: i64,
+    #[serde(default, skip_serializing_if = "crate::metadata::is_zero")]
+    pub video_kbps: i64,
     /// PMS's resolution class (`4k`, `1080`), with the frame size as its fallback.
     pub resolution: String,
     pub width: i64,
@@ -268,7 +273,11 @@ pub struct MediaVersion {
     /// A video stream is HDR or Dolby Vision. Only a response that carries streams can say so (a
     /// listing usually does not), so `false` is "not known to be".
     pub hdr: bool,
+    #[serde(default, skip_serializing_if = "no_dolby_vision")]
+    pub dovi: crate::metadata::Dovi,
 }
+
+fn no_dolby_vision(dovi: &crate::metadata::Dovi) -> bool { !dovi.present }
 
 /// The versions worth a picker: every `Media[]` entry with an id when there are at least two,
 /// else none.
@@ -283,6 +292,7 @@ pub fn versions_of(it: &plx_plex::plex::Metadata) -> Vec<MediaVersion> {
             MediaVersion {
                 id: m.id,
                 kbps: m.bitrate,
+                video_kbps: part.and_then(|p| p.stream.iter().find(|s| s.stream_type == 1)).map_or(0, |s| s.bitrate),
                 resolution: clean(&m.video_resolution),
                 width: m.width,
                 height: m.height,
@@ -292,6 +302,11 @@ pub fn versions_of(it: &plx_plex::plex::Metadata) -> Vec<MediaVersion> {
                 container: clean(part.map_or(&m.container, |p| if p.container.is_empty() { &m.container } else { &p.container })),
                 size: part.map_or(0, |p| p.size),
                 hdr: part.is_some_and(|p| p.stream.iter().any(|s| s.stream_type == 1 && s.is_hdr())),
+                dovi: part
+                    .and_then(|p| {
+                        p.stream.iter().filter(|s| s.stream_type == 1).filter_map(crate::metadata::Dovi::of_stream).last()
+                    })
+                    .unwrap_or_default(),
             }
         })
         .collect()
@@ -578,6 +593,7 @@ fn fill_caption_facts(m: &mut PmsMovie, it: &plx_plex::plex::Metadata) {
     }
     m.video_resolution = facts.video_resolution;
     m.hdr = facts.hdr;
+    m.dolby_vision = facts.dolby_vision;
     m.audience_rating = facts.audience_rating;
     m.leaf_count = facts.leaf_count;
     m.viewed_leaf_count = facts.viewed_leaf_count;
@@ -2338,7 +2354,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
         new_hubs.push(HubRow {
             // the hub id the rest of the module matches on (hero-pool eligibility,
             // `hub_is_continue`), rather than the dedicated hub's own "continueWatching"
-            title: plx_platform::i18n::msg::browse_home_continue_watching().to_string(),
+            title: plx_os::i18n::msg::browse_home_continue_watching().to_string(),
             hub_id: "home.continue".to_string(),
             key: String::new(),
             source: String::new(),
@@ -4616,7 +4632,7 @@ mod caption_fact_tests {
         assert_eq!(m.genre.as_deref(), Some("Drama"), "the FIRST genre");
         assert_eq!(m.secondary_genre.as_deref(), Some("Crime"));
         assert_eq!(m.video_resolution.as_deref(), Some("4k"));
-        assert!(m.hdr);
+        assert!(m.hdr && !m.dolby_vision, "HDR10 is HDR without Dolby Vision");
         assert_eq!(m.audience_rating, Some(7.8));
         assert_eq!(m.added_at, Some(1_700_000_000));
         assert!(!m.smart && m.leaf_count.is_none() && m.child_count == 0);
@@ -4645,7 +4661,7 @@ mod caption_fact_tests {
     fn dolby_vision_without_a_transfer_characteristic_is_hdr() {
         let m = row(r#"{"type":"movie","title":"M","Media":[{"Part":[{"Stream":[
             {"streamType":1,"DOVIPresent":true}]}]}]}"#);
-        assert!(m.hdr);
+        assert!(m.hdr && m.dolby_vision);
     }
 
     #[test]

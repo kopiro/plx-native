@@ -25,6 +25,7 @@ tomorrow that breaks one of them should fail here rather than on the television.
 import array
 import concurrent.futures
 import functools
+import hashlib
 import http.client
 import importlib.util
 import inspect
@@ -341,7 +342,7 @@ exit 0
 """
         result = self._run_isolated_focusfp(script)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("=== focusfp: 3 passed, 0 failed, 9 skipped of 12 ===", result.stdout)
+        self.assertIn("=== focusfp: 3 passed, 0 failed, 10 skipped of 13 ===", result.stdout)
 
 
     def test_only_counts_a_failed_simulator_and_the_tv_root_as_selected_outcomes(self):
@@ -449,15 +450,84 @@ class ReplayFixtures(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, name)
                 for fn in os.listdir(target):
                     if fn == "manifest.json" or fn.endswith(".jsonl"):
-                        # A current-format header (the `-current` fixture and the re-recorded
-                        # 1-boot-home-chip-grid) uses closed structural enums, not
-                        # globally admitted strings. The independent outbound guard remains
-                        # stricter and denies its publication; do not widen it in a fixture task.
+                        # Historical typed headers retain the alphabet-only refusal.
+                        # The producer-verified V13 profile has independent closed slots.
                         expected = 2 if (name in ('12-filmography-detail-return-current',
                                                   '1-boot-home-chip-grid')
                                          and fn == 'manifest.json') else 0
                         self.assertEqual(guard("tests/fixtures/replay/" + name + "/" + fn).returncode,
                                          expected, name + "/" + fn)
+
+    def test_current_producer_anchor_has_closed_independent_public_boundaries(self):
+        """Actual CLI and actual guard, without executing any outbound operation."""
+        source = os.path.join(self.FIXTURES, 'v13-owned-input-content')
+        expected = {
+            'manifest.json': '1929ede78c012ca95d429a4198e59b05fa3510b342e1145bef5c9eb99b80ec23',
+            'rec-0000.jsonl': '373369a73b6f0cfb92f88f8fbdb75bc0a0fee6a0eb5f0835d5e937473163aa5f',
+        }
+        for name, digest in expected.items():
+            with open(os.path.join(source, name), 'rb') as f:
+                self.assertEqual(hashlib.sha256(f.read()).hexdigest(), digest)
+        with open(os.path.join(source, 'manifest.json'), encoding='utf-8') as f:
+            original = json.load(f)
+        self.assertEqual((original['schema'], original['state_fp']), (3, 9159521251572352515))
+        with tempfile.TemporaryDirectory() as root:
+            subprocess.run(['git', 'init', '-q', root], check=True)
+            fixtures = os.path.join(root, 'tests', 'fixtures', 'replay')
+            os.makedirs(fixtures)
+            shutil.copy(os.path.join(self.FIXTURES, 'ALPHABET.json'), fixtures)
+            # No name/suffix permission: the producer's exact shape is what matters.
+            target = os.path.join(fixtures, 'neutral')
+            shutil.copytree(source, target)
+            manifest_path = os.path.join(target, 'manifest.json')
+            hook = os.path.join(REPO_ROOT, '.claude', 'hooks', 'outbound-guard.py')
+            private = 'UnlistedHouseholdName'
+            cases = [('producer', (), None, True),
+                     ('raw-producer', ('anchor',), 'DELETE', True),
+                     ('legal-enum', ('init', 'data', 'ui_preferences', 'subtitle_size'), 'large', True),
+                     ('unknown-fp', ('state_fp',), 9159521251572352516, False),
+                     ('old-fp', ('state_fp',), 4239819007634745513, False),
+                     ('other-old-fp', ('state_fp',), 13512213413816145485, False),
+                     ('schema', ('schema',), 4, False),
+                     ('extra', ('init', 'data', 'unexpected'), False, False),
+                     ('hold-extra', ('init', 'data', 'install_hold_hint', 'unexpected'), False, False),
+                     ('hold-type', ('init', 'data', 'install_hold_hint', 'card'), 0, False),
+                     ('truncated-domain', ('init', 'data', 'install_hold_hint'), 'DELETE', False),
+                     ('truncated-init', ('init',), 'DELETE', False),
+                     ('unknown-enum', ('init', 'data', 'ui_preferences', 'subtitle_size'), private, False),
+                     ('wrong-enum-type', ('init', 'data', 'ui_preferences', 'subtitle_size'), ['large'], False),
+                     ('enum-outside-slot', ('build',), 'large', False),
+                     ('token', ('init', 'data', 'session', 'boot', 'authority', 'DevPms', 'primary', 'token'), private, False),
+                     ('raw-private', ('init', 'data', 'session', 'boot', 'error'), private, False),
+                     ('unknown-language', ('init', 'data', 'running_language'), private, False),
+                     ('truncated-json', (), None, False),
+                     ('duplicate-json', (), None, False)]
+            for name, path, value, accepted in cases:
+                with self.subTest(case=name):
+                    doc = json.loads(json.dumps(original))
+                    if path:
+                        parent = doc
+                        for key in path[:-1]:
+                            parent = parent[key]
+                        if value == 'DELETE':
+                            del parent[path[-1]]
+                        else:
+                            parent[path[-1]] = value
+                    text = json.dumps(doc)
+                    if name == 'truncated-json':
+                        text = text[:-1]
+                    elif name == 'duplicate-json':
+                        text = text[:-1] + ', "schema": 3}'
+                    with open(manifest_path, 'w', encoding='utf-8') as f:
+                        f.write(text)
+                    cli = self._tool('check', target)
+                    outbound = subprocess.run([sys.executable, hook], input=json.dumps({
+                        'tool_name': 'Bash', 'cwd': root, 'tool_input': {
+                            'command': 'gh pr create --body-file tests/fixtures/replay/neutral/manifest.json'}}),
+                        capture_output=True, text=True, cwd=root)
+                    self.assertEqual(cli.returncode, 0 if accepted else 1, cli.stdout + cli.stderr)
+                    self.assertEqual(outbound.returncode, 0 if accepted else 2, outbound.stdout + outbound.stderr)
+                    self.assertNotIn(private, cli.stdout + cli.stderr + outbound.stdout + outbound.stderr)
 
     def test_metric_text_bytes_are_checked_at_both_public_fixture_boundaries(self):
         """MetricKey::Width is byte-valued on disk, but public fixtures are UTF-8 synthetic text.
@@ -624,12 +694,14 @@ class ReplayFixtures(unittest.TestCase):
                               "(tools/plxnative-rec rerecord it)"
                               % (name, manifest.get("schema"), schema))
             fps[name] = manifest.get("state_fp")
-        self.assertEqual(checked, 4)
+        self.assertEqual(checked, 6)
         self.assertEqual(fps, {
-            '1-boot-home-chip-grid': 17681848580094001383,
+            '1-boot-home-chip-grid': 13512213413816145485,
             '6-settings-family': 4239819007634745513,
             '12-filmography-detail-return': 4239819007634745513,
-            '12-filmography-detail-return-current': 17681848580094001383,
+            '12-filmography-detail-return-current': 13512213413816145485,
+            'v13-owned-input-content': 9159521251572352515,
+            '13-by-id-filmography': 9159521251572352515,
         })
 
     def _tool(self, *args):
@@ -8761,12 +8833,12 @@ class DepGates(unittest.TestCase):
         "ci",
         "rust-modules/src",
         # The layer crates split out of `src`: `ci/check-deps.sh` reads them as `SRC_BASE`,
-        # `SRC_MACHINE`, `SRC_NET`, `SRC_PLATFORM`, `SRC_GFX`, `SRC_UI`, `SRC_PLEX`, `SRC_TELEMETRY`, `SRC_DATA`, `SRC_SESSION` and `SRC_MEDIA`, so a copy without them grades a different
+        # `SRC_MACHINE`, `SRC_NET`, `SRC_OS`, `SRC_GFX`, `SRC_UI`, `SRC_PLEX`, `SRC_TELEMETRY`, `SRC_DATA`, `SRC_SESSION` and `SRC_MEDIA`, so a copy without them grades a different
         # tree than the checkout.
         "rust-modules/base/src",
         "rust-modules/machine/src",
         "rust-modules/net/src",
-        "rust-modules/platform/src",
+        "rust-modules/os/src",
         "rust-modules/gfx/src",
         "rust-modules/ui/src",
         "rust-modules/plex/src",
@@ -8778,6 +8850,11 @@ class DepGates(unittest.TestCase):
         "rust-modules/play-feed/src",
         "rust-modules/appkit/src",
         "rust-modules/screens/src",
+        # `SRC_PLATFORM_WEBOS` / `SRC_PLATFORM_DESKTOP` / `SRC_PLATFORM_TIZEN`: the platform crates' sources. `fnlen` reads the webOS
+        # crate's `port.rs`, so a copy without it fails that rule for a reason the real tree does not share.
+        "rust-modules/platform-webos/src",
+        "rust-modules/platform-desktop/src",
+        "rust-modules/platform-tizen/src",
         "rust-modules/Cargo.toml",
         "rust-modules/build.rs",
         "rust-modules/net/Cargo.toml",
@@ -8790,14 +8867,20 @@ class DepGates(unittest.TestCase):
         "rust-modules/appkit/build.rs",
         "rust-modules/screens/Cargo.toml",
         "rust-modules/screens/build.rs",
-        "rust-modules/platform/Cargo.toml",
-        "rust-modules/platform/build.rs",
+        "rust-modules/os/Cargo.toml",
+        "rust-modules/os/build.rs",
         "rust-modules/gfx/Cargo.toml",
         "rust-modules/gfx/build.rs",
         "rust-modules/ui/Cargo.toml",
         "rust-modules/ui/build.rs",
         "rust-modules/storage/Cargo.toml",
         "rust-modules/storage/build.rs",
+        "rust-modules/platform-webos/Cargo.toml",
+        "rust-modules/platform-webos/build.rs",
+        "rust-modules/platform-desktop/Cargo.toml",
+        "rust-modules/platform-desktop/build.rs",
+        "rust-modules/platform-tizen/Cargo.toml",
+        "rust-modules/platform-tizen/build.rs",
         "rust-modules/.cargo",
         "Makefile",
     )
@@ -8999,11 +9082,14 @@ class DepGates(unittest.TestCase):
         match per offending file, so a file the rule did not scan (or the copy did not carry)
         is missing from the output and that input's subtest fails by name. Run one file at a
         time this was 17 of the 73 `ci/check-deps.sh` runs this class made when each ran every rule."""
-        inputs = ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/net/Cargo.toml", "rust-modules/plex/Cargo.toml", "rust-modules/telemetry/Cargo.toml", "rust-modules/data/Cargo.toml", "rust-modules/session/Cargo.toml", "rust-modules/media/Cargo.toml", "rust-modules/appkit/Cargo.toml", "rust-modules/appkit/build.rs", "rust-modules/screens/Cargo.toml", "rust-modules/screens/build.rs", "rust-modules/platform/Cargo.toml",
-                  "rust-modules/platform/build.rs", "rust-modules/gfx/Cargo.toml",
+        inputs = ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/net/Cargo.toml", "rust-modules/plex/Cargo.toml", "rust-modules/telemetry/Cargo.toml", "rust-modules/data/Cargo.toml", "rust-modules/session/Cargo.toml", "rust-modules/media/Cargo.toml", "rust-modules/appkit/Cargo.toml", "rust-modules/appkit/build.rs", "rust-modules/screens/Cargo.toml", "rust-modules/screens/build.rs", "rust-modules/os/Cargo.toml",
+                  "rust-modules/os/build.rs", "rust-modules/gfx/Cargo.toml",
                   "rust-modules/gfx/build.rs", "rust-modules/ui/Cargo.toml", "rust-modules/ui/build.rs",
                   "rust-modules/storage/Cargo.toml",
-                  "rust-modules/storage/build.rs", "rust-modules/.cargo/config.toml", "Makefile")
+                  "rust-modules/storage/build.rs", "rust-modules/platform-webos/Cargo.toml", "rust-modules/platform-webos/build.rs",
+                  "rust-modules/platform-desktop/Cargo.toml", "rust-modules/platform-desktop/build.rs",
+                  "rust-modules/platform-tizen/Cargo.toml", "rust-modules/platform-tizen/build.rs",
+                  "rust-modules/.cargo/config.toml", "Makefile")
         for rel in inputs:
             target = os.path.join(self.tree, rel)
             self.assertTrue(os.path.exists(target), f"{rel} is not in the private copy (TREE_INPUTS)")
@@ -9434,7 +9520,7 @@ impl PersonOwnerGateFixture {
         files = {}
         for i, visibility in enumerate(("pub", "pub(crate)", "pub(super)")):
             for j, predicate in enumerate(('test', 'all(test, feature = "devtriggers")',
-                                           'all(any(test, feature = "test-support"), feature = "hostsim")')):
+                                           'all(any(test, feature = "test-support"), feature = "sim")')):
                 files[f"_check_deps_visible_test_{i}_{j}.rs"] = (
                     f"#[cfg({predicate})]\n{visibility} mod fixture {{\n"
                     "    fn work() { std::thread::spawn(|| {}); }\n}\n")
@@ -9658,21 +9744,30 @@ impl PersonOwnerGateFixture {
 
     @_grades("fxlanes")
     def test_fxlanes_ledger_fails_a_new_appfx_side_queue_but_not_a_deliver_arm(self):
-        """RED: in `Bridge::app_effect` an `AppFx` arm that pushes `Fx::Deliver(` rides the ordered
-        FIFO and costs nothing; an arm that parks its request on a side queue must be a ledger line,
-        so a NEW variant with a side queue fails `fxlanes` while a new Deliver arm does not."""
+        """Current typed inline deliveries and async ports pass; retaining either an inline
+        command or the taken external Loop request fails. Mutate real production execution,
+        not the removed boolean classifier/unreachable fallback."""
+        baseline = self._deps()
+        self.assertEqual(baseline.returncode, 0, baseline.stdout + baseline.stderr)
         r = self._mutate(
-            "app/bridge.rs", 'AppFx::Loop(_) => unreachable!("Loop commands yield to the FIFO runner"),',
-            'AppFx::Loop(_) => unreachable!("Loop commands yield to the FIFO runner"),\n'
-            "            AppFx::Sneaky(req) => self.sneaky_reqs.push(req),\n"
-            "            AppFx::Orderly(cmd) => out.push(Fx::Deliver(MachineId::Consent,\n"
-            "                Delivery::Machine(AppMsg::Consent(cmd)))),")
+            "app/bridge.rs",
+            "InlineAppFx::Consent(command) => out.push(Fx::Deliver(\n"
+            "                MachineId::Consent, Delivery::Machine(AppMsg::Consent(command)))),",
+            "InlineAppFx::Consent(command) => self.pending.push(command),")
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
         self.assertIn("fxlanes:", out)
-        self.assertIn("rust-modules/src/app/bridge.rs::AppFx::Sneaky", out)
-        self.assertNotIn("AppFx::Orderly", out)
+        self.assertIn("rust-modules/src/app/bridge.rs::AppFx::Consent", out)
+        self.assertNotIn("::AppFx::Store", out, "addressed Deliver arms remain on the FIFO")
         self.assertIn("ci/allow/fxlanes/app.txt", out)
+        r = self._mutate(
+            "app/bridge.rs",
+            "super::run::execute_loop_command(request, d, self, resources)",
+            "self.pending.push(request); AppCommandOutcome::Completed")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("app-command-routing: runner arm parks work", out)
+        self.assertIn("fxlanes: external FIFO proof failed", out)
 
     @_grades("workers", "globals", "forks")
     def test_ledgers_ignore_tests_comments_strings_and_declarations(self):
@@ -9832,28 +9927,28 @@ impl PersonOwnerGateFixture {
         r = self._plant_many({
             "_check_deps_selftest_qualified.rs": (
                 "pub fn qualified() {\n"
-                "    let _ = plx_platform::devcaps::caps();\n"
+                "    let _ = plx_os::devcaps::caps();\n"
                 "    let _ = plx_plex::plex::is_dp_audio(\"dca\", 6);\n"
                 "    let _ = plx_plex::plex::transcoder::is_dp_audio_track(\"dca\", 6, 48_000);\n"
                 "    let _ = plx_plex::plex::is_dp_audio_with(&c, \"dca\", 6);\n"
                 "    let _ = plx_plex::plex::is_dp_audio_track_with(&c, \"dca\", 6, 48_000);\n}\n"),
             "_check_deps_selftest_renamed.rs": (
-                "use plx_platform::devcaps as dc;\n"
-                "use plx_platform::devcaps::caps as device_caps;\n"
+                "use plx_os::devcaps as dc;\n"
+                "use plx_os::devcaps::caps as device_caps;\n"
                 "use plx_plex::plex::is_dp_audio as dp;\n\n"
                 "pub fn renamed() {\n    let _ = (dc::caps(), device_caps(), dp(\"dca\", 6));\n}\n"),
             "_check_deps_selftest_bare.rs": (
-                "use plx_platform::devcaps::{self, caps};\n"
+                "use plx_os::devcaps::{self, caps};\n"
                 "use plx_plex::plex::{is_dp_audio_track, is_dp_audio_with};\n\n"
                 "pub fn bare() {\n    let _ = caps();\n    let _ = it.caps();\n"
                 "    let _ = is_dp_audio_track(\"dca\", 6, 0);\n    let _ = is_dp_audio_with(&c, \"dca\", 6);\n}\n"),
             "_check_deps_selftest_globbed.rs": (
-                "use plx_platform::devcaps::*;\nuse plx_plex::plex::*;\n\n"
+                "use plx_os::devcaps::*;\nuse plx_plex::plex::*;\n\n"
                 "pub fn globbed() {\n    let _ = (caps(), is_dp_audio(\"dca\", 6));\n}\n"),
             "_check_deps_selftest_no_import.rs": (
                 "pub fn no_import(caps: &Caps) -> usize {\n    let n = caps.audio.len();\n    helper::caps(n)\n}\n"),
             "_check_deps_selftest_taken.rs": (
-                "use plx_platform::devcaps::Caps;\n\n"
+                "use plx_os::devcaps::Caps;\n\n"
                 "pub fn taken(caps: &Caps) -> bool {\n    caps.hevc\n}\n"),
         }, crate)
         out = r.stdout + r.stderr
@@ -10033,26 +10128,31 @@ impl PersonOwnerGateFixture {
 
     @_grades("fxlanes")
     def test_fxlanes_ledger_sees_every_variant_of_an_arm_and_a_catch_all_arm(self):
-        """RED: an or-pattern arm (`AppFx::A(r) | AppFx::B(r) => ..`, on one line or wrapped) is a site
-        for EVERY variant on its head, and an arm with no `AppFx::` head (`other => ..`, `_ => ..`) is a
-        site of its own, keyed `AppFx::_`: both used to ride on the first variant's line, or on nothing.
-        An or-pattern arm that pushes `Fx::Deliver(` is on the ordered lane and costs nothing."""
+        """Every typed variant in a wrapped or-pattern and an untyped catch-all must be
+        guarded. Whole-effect bindings keep the or-pattern payload type valid even across
+        different command families; the external catch-all cannot bypass real named arms."""
         r = self._mutate(
-            "app/bridge.rs", 'AppFx::Loop(_) => unreachable!("Loop commands yield to the FIFO runner"),',
-            'AppFx::Loop(_) => unreachable!("Loop commands yield to the FIFO runner"),\n'
-            "            AppFx::PlantedOr(req) | AppFx::PlantedFirst(req)\n"
-            "                | AppFx::PlantedWrapped(req) => self.planted_reqs.push(req),\n"
-            "            AppFx::PlantedOk(cmd) | AppFx::PlantedOk2(cmd) => out.push(Fx::Deliver(MachineId::Consent,\n"
-            "                Delivery::Machine(AppMsg::Consent(cmd)))),\n"
+            "app/bridge.rs",
+            "InlineAppFx::Consent(command) => out.push(Fx::Deliver(\n"
+            "                MachineId::Consent, Delivery::Machine(AppMsg::Consent(command)))),",
+            "effect @ InlineAppFx::Session(_) | effect @ InlineAppFx::Consent(_)\n"
+            "                | effect @ InlineAppFx::Huds(_) => self.pending.push(effect),\n"
             "            other => self.misc_reqs.push(other),")
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
         key = "rust-modules/src/app/bridge.rs::AppFx::"
-        for variant in ("PlantedOr", "PlantedFirst", "PlantedWrapped", "_"):
+        for variant in ("Session", "Consent", "Huds", "_"):
             with self.subTest(variant=variant):
                 self.assertIn(f"{key}{variant}  (ledger: ci/allow/fxlanes/app.txt)", out)
-        self.assertNotIn("PlantedOk", out)
-        self.assertNotIn(f"{key}Loop", out, "the existing externally yielded variant is not a new lane")
+        self.assertNotIn(f"{key}Store", out, "addressed Deliver arms remain on the FIFO")
+        r = self._mutate(
+            "app/bridge.rs", "Err(outcome) => outcome,",
+            "Err(outcome) => outcome,\n"
+            "            other => { self.pending.push(other); AppCommandOutcome::Completed },")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("app-command-routing: runner must explicitly match external variants or Err", out)
+        self.assertIn("fxlanes: external FIFO proof failed", out)
 
     @_grades("globals")
     def test_globals_ledger_sees_every_spelling_of_the_player_transport_in_lifecycle(self):
@@ -10274,10 +10374,10 @@ impl PersonOwnerGateFixture {
     @_grades("sink")
     def test_sink_gate_catches_the_video_sink_named_outside_the_player(self):
         """Step L15: the Starfish/ACB verbs are the player's alone. RED: a module outside
-        `player/`, `port.rs` and `tv/` that reaches `tv::sink::installed()` must fail `sink`."""
+        `player/`, the platform crates and `tv/` that reaches `tv::sink::installed()` must fail `sink`."""
         r = self._plant(
             "_check_deps_selftest_sink_out.rs",
-            "pub fn pause_it() {\n    let _ = plx_platform::tv::sink::installed();\n}\n",
+            "pub fn pause_it() {\n    let _ = plx_os::tv::sink::installed();\n}\n",
         )
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
@@ -10289,11 +10389,193 @@ impl PersonOwnerGateFixture {
         """GREEN: the same call from a file under `player/` leaves `sink` (and the script) green."""
         r = self._plant(
             "player/_check_deps_selftest_sink_in.rs",
-            "pub fn pause_it() {\n    let _ = plx_platform::tv::sink::installed();\n}\n",
+            "pub fn pause_it() {\n    let _ = plx_os::tv::sink::installed();\n}\n",
         )
         out = r.stdout + r.stderr
         self.assertEqual(r.returncode, 0, out)
         self.assertIn("ok — sink", out)
+
+    @_grades("sink")
+    def test_sink_gate_reads_the_platform_crates_beyond_the_three_files_that_name_it(self):
+        """W7b: the exemption is `platform-webos`'s `webos/` and `port.rs` and `platform-desktop`'s `lib.rs`
+        (what `os/webos/*`, `port.rs` and `platform_desktop.rs` were before the platform crates), not the two
+        crates. RED: the webOS crate's other files (`system.rs`, `keymanager.rs`, `webos.rs` and `lib.rs`
+        sit beside `port.rs`) and the desktop crate's other files (the simulator binary among them) must
+        still fail `sink`, and each is named."""
+        call = "pub fn f() {\n    let _ = plx_os::tv::sink::installed();\n}\n"
+        r = self._plant_all([
+            ("_check_deps_selftest_sink_webos_root.rs", call, "platform-webos"),
+            ("_check_deps_selftest_sink_desktop_root.rs", call, "platform-desktop"),
+            ("bin/_check_deps_selftest_sink_desktop_bin.rs", call, "platform-desktop"),
+        ])
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("sink:", out)
+        for name in ("platform-webos/src/_check_deps_selftest_sink_webos_root.rs",
+                     "platform-desktop/src/_check_deps_selftest_sink_desktop_root.rs",
+                     "platform-desktop/src/bin/_check_deps_selftest_sink_desktop_bin.rs"):
+            with self.subTest(file=name):
+                self.assertIn(name, out)
+
+    @_grades("sink")
+    def test_sink_gate_allows_the_native_webos_port_to_name_the_video_sink(self):
+        """GREEN: a file under `platform-webos`'s `webos/` (the native port) may name the sink."""
+        r = self._plant(
+            "webos/_check_deps_selftest_sink_in.rs",
+            "pub fn pause_it() {\n    let _ = plx_os::tv::sink::installed();\n}\n",
+            crate_dir="platform-webos",
+        )
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("ok — sink", out)
+
+    # The platform crates took `port.rs`, `system.rs`, `platform_desktop.rs` and `bin/sim.rs` out of the application crate
+    # and `keymanager.rs`, `webos.rs` and `webos/` out of `os`. A gate that read those crates' files at base and was not
+    # given the platform roots reads nothing of them now: the next tests plant the shape each such gate is for in the
+    # crates' files and require the gate to name each.
+    PLATFORM_PLANT_SITES = (
+        ("_check_deps_selftest_platform_webos.rs", "platform-webos"),
+        ("_check_deps_selftest_platform_desktop.rs", "platform-desktop"),
+        ("bin/_check_deps_selftest_platform_desktop_bin.rs", "platform-desktop"),
+        ("_check_deps_selftest_platform_tizen.rs", "platform-tizen"),
+    )
+
+    def _plant_in_platform_crates(self, body):
+        """`body` planted in a file of each platform crate (the webOS crate's root, the desktop crate's root and its
+        simulator binary's directory, and the Tizen crate's root), graded by ONE run. Returns the run and the planted file names."""
+        r = self._plant_all([(name, body, crate) for name, crate in self.PLATFORM_PLANT_SITES])
+        return r, [f"{crate}/src/{name}" for name, crate in self.PLATFORM_PLANT_SITES]
+
+    @_grades("browse-owner", "viewstate-owner", "person-owner", "search-owner", "hubs-owner", "metadata-owner")
+    def test_the_owner_gates_read_the_platform_crates(self):
+        """W7b: the six owner gates read `$SRC`, `data/`, `appkit/` and `screens/` through one shared prelude. RED (the
+        prelude without the platform roots): a retired free facade called from a platform crate's file passes all six."""
+        calls = {
+            "browse-owner": "plx_data::browse::legacy_adapter(",
+            "viewstate-owner": "plx_data::viewstate::apply(",
+            "person-owner": "plx_data::person::current(",
+            "search-owner": "plx_data::search::apply(",
+            "hubs-owner": "plx_data::pms::apply(",
+            "metadata-owner": "plx_data::metadata::apply(",
+        }
+        body = "pub fn retired() {\n" + "".join(f"    {call});\n" for call in calls.values()) + "}\n"
+        r, files = self._plant_in_platform_crates(body)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        for rule, call in calls.items():
+            self.assertIn(f"{rule}:", out)
+            for name in files:
+                with self.subTest(rule=rule, file=name):
+                    self.assertTrue(any(name in line and call in line for line in out.splitlines()),
+                                    f"{rule} did not name {name}\n{out}")
+
+    @_grades("nav", "owned-damage", "route", "textmeasure", "fxlanes")
+    def test_the_whole_tree_gates_read_the_platform_crates(self):
+        """W7b: `nav`, `owned-damage`, `route`, `textmeasure` and `fxlanes` read `$SRC` (and `owned-damage` `$SRC_OS`)
+        whole, and so read `port.rs`, `system.rs`, `keymanager.rs`, `webos/` and the simulator binary until those left
+        for the platform crates. RED (the roots without the platform crates): each shape planted in a platform
+        crate's file passes its gate; each is named now."""
+        shapes = {
+            "nav": "plx_ui::nav::page_alpha()",
+            "owned-damage": "plx_machine::motion::report::invalidate()",
+            "route": "pub enum Route { Home }",
+            "textmeasure": "plx_gfx::text::text_width(s.as_ptr(), 24, 0)",
+            "fxlanes": "fn app_effect(fx: AppFx) {\n    match fx {\n        AppFx::SelftestPlatform(r) => self.side.push(r),\n    }\n}",
+        }
+        body = (
+            "pub fn nav_reader() { let _ = plx_ui::nav::page_alpha(); }\n"
+            "pub fn repaint() { plx_machine::motion::report::invalidate(); }\n"
+            "pub enum Route { Home }\n"
+            "pub fn label_width(s: &std::ffi::CStr) -> f32 { plx_gfx::text::text_width(s.as_ptr(), 24, 0) }\n"
+            "fn app_effect(fx: AppFx) {\n    match fx {\n        AppFx::SelftestPlatform(r) => self.side.push(r),\n    }\n}\n"
+        )
+        r, files = self._plant_in_platform_crates(body)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        for rule in shapes:
+            self.assertIn(f"{rule}:", out)
+        for name in files:
+            for rule, needle in (("nav", "plx_ui::nav::page_alpha"), ("owned-damage", "motion::report::invalidate"),
+                                 ("route", "enum Route"), ("textmeasure", "text_width"),
+                                 ("fxlanes", f"rust-modules/{name.split('/')[0]}/src/{name.split('/', 2)[2]}::AppFx::SelftestPlatform")):
+                with self.subTest(rule=rule, file=name):
+                    self.assertTrue(any(name.split("/", 2)[2] in line and needle in line for line in out.splitlines()),
+                                    f"{rule} did not name {name}\n{out}")
+
+    def test_a_gate_that_reads_the_whole_app_or_os_crate_reads_the_platform_crates(self):
+        """W7b, the class: a rule that names `$SRC` (the application crate) or `$SRC_OS` WHOLE read the files the
+        platform crates took out of them, and stops reading them if it is not given the platform roots. Every command in
+        `ci/check-deps.sh` that names either root whole names all three platform roots (`$SRC_PLATFORM_WEBOS`, `$SRC_PLATFORM_DESKTOP` and `$SRC_PLATFORM_TIZEN`).
+        The one allowance is the wholly-test classification prelude, one `rust_test_modules.py <root>` command per root,
+        which must have a line for each platform root instead. A rule scoped to a directory (`"$SRC/app"`) or a file
+        (`"$SRC_OS/tv/plane.rs"`) cannot reach the moved files and is not matched. This reads `check-deps.sh` only: the
+        Python scanners that name their roots (`ci/ui_boundaries.py`'s `EXTENSION_ROOTS`) have their own test beside them
+        (`ci/test_ui_boundaries.py`), and the two Rust walks (`plx_base`'s log-call scan, `plx_media`'s `fetch_update`
+        scan) list the workspace directory instead of naming crates."""
+        with open(os.path.join(self.ROOT, "ci", "check-deps.sh"), encoding="utf-8") as f:
+            physical = f.read().split("\n")
+        logical, current = [], ""
+        for line in physical:
+            if not current and line.lstrip().startswith("#"):
+                continue
+            if line.endswith("\\"):
+                current += line[:-1] + " "
+                continue
+            logical.append(current + line)
+            current = ""
+        whole_root = re.compile(r'"?\$SRC(?:_OS)?"?(?=[\s)]|$)')
+        prelude = re.compile(r'\s*python3 ci/rust_test_modules\.py "\$SRC(?:_OS)?"\s*')
+        platform_roots = ('"$SRC_PLATFORM_WEBOS"', '"$SRC_PLATFORM_DESKTOP"', '"$SRC_PLATFORM_TIZEN"')
+        offenders = [command.strip()[:140] for command in logical
+                     if whole_root.search(command) and not prelude.fullmatch(command)
+                     and not all(root in command for root in platform_roots)]
+        self.assertEqual(offenders, [], "these commands read the whole of `$SRC` or `$SRC_OS` and not the platform crates")
+        script = "\n".join(logical)
+        for root in platform_roots:
+            self.assertIn(f"python3 ci/rust_test_modules.py {root}", script, f"the wholly-test prelude has no line for {root}")
+
+    @_grades("frame")
+    def test_frame_gate_catches_a_shell_call_outside_the_loop(self):
+        """D4, and W2 of the platform plan: the window and the bus are the platform's `Shell`, and its
+        three privileged calls (`pump_bus`, `opaque_route`, `clear_opaque_region`) belong to
+        `app/run.rs` alone. RED: each way to spell a call on the shell, planted outside `run.rs`, must
+        fail `frame` and be named: on a receiver called `shell`, through the trait's path, and as a
+        chain broken onto a continuation line."""
+        plants = [
+            ("_check_deps_selftest_frame_receiver.rs",
+             "pub fn pump(app: &App) {\n    app.platform.shell.pump_bus();\n}\n", None),
+            ("_check_deps_selftest_frame_path.rs",
+             "pub fn route(shell: &dyn Shell) {\n    Shell::opaque_route(shell, true);\n}\n", None),
+            ("_check_deps_selftest_frame_chain.rs",
+             "pub fn clear(app: &App) {\n    app.platform\n        .shell\n        .clear_opaque_region();\n}\n", None),
+            ("_check_deps_selftest_frame_chain_tail.rs",
+             "pub fn pump(app: &App) {\n    app.platform.shell\n        .pump_bus();\n}\n", None),
+        ]
+        r = self._plant_all(plants)
+        self._assert_flagged(r, "frame", [
+            ("_check_deps_selftest_frame_receiver.rs", "pump_bus"),
+            ("_check_deps_selftest_frame_path.rs", "opaque_route"),
+            ("_check_deps_selftest_frame_chain.rs", "clear_opaque_region"),
+            ("_check_deps_selftest_frame_chain_tail.rs", "pump_bus"),
+        ])
+
+    @_grades("frame")
+    def test_frame_gate_ignores_a_rig_forward_a_string_and_a_comment(self):
+        """GREEN: `Rig` has `opaque_route` and `clear_opaque_region` of its own (`Bridge` forwards them, and
+        the dispatcher calls them on its `rig`, either on one line or wrapped onto a continuation line),
+        and a pin test spells the loop's calls as string data. None of those is a call on the shell."""
+        r = self._plant(
+            "_check_deps_selftest_frame_ok.rs",
+            "pub fn forward(bridge: &mut Bridge) {\n    bridge.opaque_route(true);\n"
+            "    self.bridge.clear_opaque_region();\n"
+            "    self.bridge\n        .opaque_route(true);\n"
+            "    rig\n        .clear_opaque_region();\n}\n"
+            'pub const PIN: &str = "    app.platform.shell.opaque_route(bound);";\n'
+            "// app.platform.shell.pump_bus();\n",
+        )
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("ok — frame", out)
 
     @_grades("textmeasure")
     def test_textmeasure_gate_catches_a_bare_call_outside_the_seam(self):
@@ -10772,7 +11054,7 @@ static mut MUTABLE: u8 = 0;
         # The module-layer migration list (ci/check-module-layers.py, docs/module-layers.md): the
         # upward references that existed when the target crate graph was declared, 2026-10-02 (231),
         # less step L1's 72, which moved the event log out of lib.rs in the same change, less the
-        # remaining 159 that steps L2-L14 cleared: 231 - 72 - 159 = 0. Then `[port webos]` was
+        # remaining 159 that steps L2-L14 cleared: 231 - 72 - 159 = 0. Then `[platform webos]` was
         # declared (step L15), and the 42 (file, member) pairs that name it from outside became
         # that step's entries: 0 + 42 = 42. Merging main brought main's system toast (#392) and its
         # two callers: 42 + 2 = 44. Step L15 moved all 44 behind the `tv` interfaces and the port:
@@ -10792,7 +11074,7 @@ static mut MUTABLE: u8 = 0;
         "store-seams.txt": 0,
         "threads.txt": 0,
         "ticks.txt": 2,
-        "wall.txt": 3,
+        "wall.txt": 2,
     }
 
     # The Sans-IO ledgers' pins, one number per RULE (the sum over its area files): a ledger only

@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::registry::{merged_ranges, row_neighbourhood, tile_facts, LibraryIdentity, LibraryLike, LibrarySectionIdentity};
+use plx_ui::a11y::{A11y, A11yPath, Seg};
 use plx_ui::caption_policy::CaptionPolicy;
 use plx_ui::cards as ui_cards;
 use plx_ui::cards::{CardSource, Grid, GridSpec, Tile};
@@ -104,7 +105,7 @@ struct Window {
 /// invalidates formatting; walking focus only changes the shared component's presentation.
 #[derive(Default)]
 struct CaptionCache {
-    language: Option<plx_platform::i18n::Language>,
+    language: Option<plx_os::i18n::Language>,
     format: String,
     sort: String,
     /// The calendar date the labels were worded for: "Today" and "Yesterday" go stale at midnight.
@@ -621,7 +622,7 @@ impl GridSrc<'_, '_> {
         let Some(item) = self.view.item(i) else { return read(&ui_cards::TileLabel::default()) };
         if self.values {
             let key = sort_key(&self.view);
-            let locale = plx_platform::i18n::current();
+            let locale = plx_os::i18n::current();
             let mut cache = self.captions.borrow_mut();
             if cache.language != Some(locale.language()) || cache.format != locale.format_locale() || cache.sort != key
                 || cache.today != self.today {
@@ -652,6 +653,18 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
     fn with_label<R>(&self, i: usize, read: impl FnOnce(&ui_cards::TileLabel) -> R) -> R { self.with_tile_label(i, read) }
     fn progress(&self, i: usize) -> Option<f32> {
         self.view.item(i).filter(|item| item.kind != 3).and_then(|item| item.resume_frac())
+    }
+    /// The item's own title, whatever the caption policy shows under the focused card.
+    fn a11y_title(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
+        self.view.item(i).map(|item| std::borrow::Cow::Borrowed(item.title.as_str()))
+    }
+    /// A slot whose page has not landed draws a skeleton (`loaded` stays true so the grid paints
+    /// it), and is not loaded: it holds no item.
+    fn a11y_loaded(&self, i: usize) -> bool { self.view.item(i).is_some() }
+    /// The item's ratingKey (a collection's, on the Collections page): what a by-id press names to stay
+    /// on the title it read. A slot whose page has not landed has none.
+    fn subject(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
+        self.view.item(i).filter(|item| !item.rk.is_empty()).map(|item| std::borrow::Cow::Borrowed(item.rk.as_str()))
     }
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
         #[cfg(test)] OVERLAID.with(|seen| seen.borrow_mut().push((i, tile.scale)));
@@ -770,6 +783,34 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
         let index = (row * cols + col).min(self.total.saturating_sub(1));
         FocusKey { entry: self.entry, elem: self.elem_at(index).unwrap_or(0) }
     }
+
+    /// **`grid.card.<i>`**, `i` the card's place in the listing (the shared cards' `card.<i>` under the
+    /// grid's name). The title is its label and the ratingKey ([`CardSource::subject`]) its subject; a
+    /// slot whose page has not landed is a card with `loaded` false. Only a slot that holds a key
+    /// (the visible rows, the look-ahead, the focus and the remembered seat: `windows`) has an id, as
+    /// only it can be focused: `GroupSpec::len` is the whole listing.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let i = self.index_of(*key)?;
+        Some(ui_cards::card_a11y::<H, _>(A11yPath::new().name("grid"), &self.source(cx), i))
+    }
+
+    /// Every card that holds a key, in listing order.
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == self.group {
+            out.extend(self.windows.iter().flat_map(|w| w.elems.iter().copied()));
+        }
+    }
+
+    /// The inverse of [`Self::a11y`]: the slot a path names by its index, when it holds a key.
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        let mut segs = path.segs();
+        let i = match (segs.next(), segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("grid")), Some(Seg::Name("card")), Some(Seg::Index(i)), None) => i,
+            _ => return None,
+        };
+        let elem = self.elem_at(i)?;
+        Focusable::<H>::a11y(self, &elem, cx).filter(|a| a.path == *path).map(|_| elem)
+    }
 }
 
 impl<H: LibraryLike> Part<H> for GridPart {
@@ -798,7 +839,7 @@ impl<H: LibraryLike> Part<H> for GridPart {
 mod caption_cache_review_tests {
     use super::*;
     use plx_data::{browse::view::ListingSnapshot, pms::PmsMovie};
-    use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+    use plx_os::i18n::{language_on_this_thread_for_test, Preference};
 
     #[test]
     fn review_caption_cache_borrows_words_and_invalidates_stale_publications() {
@@ -821,7 +862,7 @@ mod caption_cache_review_tests {
         {
             let _ru = language_on_this_thread_for_test(Preference::Ru);
             src.with_tile_label(0, |_| {});
-            assert_eq!(cache.borrow().language, Some(plx_platform::i18n::current().language()));
+            assert_eq!(cache.borrow().language, Some(plx_os::i18n::current().language()));
         }
         let changed = listing.clone().with_page(0, vec![PmsMovie { title: "Replaced".into(), ..Default::default() }]);
         src.view = changed.view();

@@ -375,7 +375,7 @@ impl LibraryType {
     }
 
     pub fn title(self, kind: SecKind) -> &'static str {
-        self.title_in(kind, plx_platform::i18n::current())
+        self.title_in(kind, plx_os::i18n::current())
     }
 
     /// `n` of what this listing holds, in the same words every other count of it wears: "185
@@ -383,7 +383,7 @@ impl LibraryType {
     /// source of the noun beside a number, shared by the Sources list's "185 films" line and the
     /// Library header's "37 of 120 films" read-out, so a count never changes its noun by screen.
     pub fn count_label(self, kind: SecKind, n: i64) -> String {
-        use plx_platform::i18n::msg;
+        use plx_os::i18n::msg;
         match (self, kind) {
             (Self::Primary, SecKind::Movie) => msg::browse_person_films(n),
             (Self::Primary, SecKind::Show) => msg::browse_person_shows(n),
@@ -393,13 +393,13 @@ impl LibraryType {
         }
     }
 
-    fn title_in(self, kind: SecKind, locale: &plx_platform::i18n::LocaleContext) -> &'static str {
+    fn title_in(self, kind: SecKind, locale: &plx_os::i18n::LocaleContext) -> &'static str {
         match (self, kind) {
-            (Self::Primary, SecKind::Movie) => plx_platform::i18n::msg::browse_kind_movies_in(locale),
-            (Self::Primary, SecKind::Show) => plx_platform::i18n::msg::browse_kind_tv_shows_in(locale),
-            (Self::Seasons, _) => plx_platform::i18n::msg::browse_kind_seasons_in(locale),
-            (Self::Episodes, _) => plx_platform::i18n::msg::browse_kind_episodes_in(locale),
-            (Self::Collections, _) => plx_platform::i18n::msg::browse_kind_collections_in(locale),
+            (Self::Primary, SecKind::Movie) => plx_os::i18n::msg::browse_kind_movies_in(locale),
+            (Self::Primary, SecKind::Show) => plx_os::i18n::msg::browse_kind_tv_shows_in(locale),
+            (Self::Seasons, _) => plx_os::i18n::msg::browse_kind_seasons_in(locale),
+            (Self::Episodes, _) => plx_os::i18n::msg::browse_kind_episodes_in(locale),
+            (Self::Collections, _) => plx_os::i18n::msg::browse_kind_collections_in(locale),
         }
     }
 
@@ -408,11 +408,11 @@ impl LibraryType {
     /// order differ by language.
     pub fn empty_readout(self, kind: SecKind, library: &str) -> String {
         match (self, kind) {
-            (Self::Primary, SecKind::Movie) => plx_platform::i18n::msg::browse_library_no_movies(library),
-            (Self::Primary, SecKind::Show) => plx_platform::i18n::msg::browse_library_no_shows(library),
-            (Self::Seasons, _) => plx_platform::i18n::msg::browse_library_no_seasons(library),
-            (Self::Episodes, _) => plx_platform::i18n::msg::browse_library_no_episodes(library),
-            (Self::Collections, _) => plx_platform::i18n::msg::browse_library_no_collections(library),
+            (Self::Primary, SecKind::Movie) => plx_os::i18n::msg::browse_library_no_movies(library),
+            (Self::Primary, SecKind::Show) => plx_os::i18n::msg::browse_library_no_shows(library),
+            (Self::Seasons, _) => plx_os::i18n::msg::browse_library_no_seasons(library),
+            (Self::Episodes, _) => plx_os::i18n::msg::browse_library_no_episodes(library),
+            (Self::Collections, _) => plx_os::i18n::msg::browse_library_no_collections(library),
         }
     }
 
@@ -1048,6 +1048,21 @@ pub struct BrowseState {
     recorded: Option<plx_plex::plex::session::HomePins>,
     preference_writes: preferences_job::Preferences,
     pending_pins: Option<(String, std::sync::Arc<std::sync::Mutex<PinWrite>>)>,
+    /// The outcome of the last editor commit ([`apply_pins_from`](Self::apply_pins_from)),
+    /// published on the directory ([`super::view::DirectoryView::pin_commit`]) so the screen that
+    /// sent it can wait for its answer instead of assuming one.
+    pin_commit: PinCommit,
+}
+
+/// **What the last `ApplyPins` came to**: `seq` counts the commits this store has run (a screen
+/// remembers the value it sent its own commit after, and waits for it to move), `recorded` says
+/// whether that commit produced a record (`false`: the session it was handed had no `client_id`, or
+/// the write queue refused it, so the selection stands for this run only). Not a durability claim:
+/// the write itself lands later.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PinCommit {
+    pub seq: u32,
+    pub recorded: bool,
 }
 
 /// Shared by a cloned Browse snapshot, so consuming a receipt never makes another clone
@@ -1147,6 +1162,7 @@ impl Default for BrowseState {
             view_memory: Default::default(),
             recorded: None,
             pending_pins: None,
+            pin_commit: PinCommit::default(),
             preference_writes: Default::default(),
             session_generation: 0,
             current_sid: ServerId::UNSET,
@@ -2233,6 +2249,9 @@ impl BrowseState {
         };
         state.shown_bands(kind).is_some_and(|rail| rail.listed(state.sort_desc).populated() >= 2)
     }
+    pub(crate) fn pin_commit(&self) -> PinCommit {
+        self.pin_commit
+    }
     fn discovery_state(&self) -> SecFetch {
         if !self.sections.is_empty() || self.sources.iter().all(|source| source.sections_done) {
             SecFetch::Ready
@@ -2549,6 +2568,7 @@ impl BrowseState {
             self.bump_sections_gen();
 
         }
+        self.pin_commit = PinCommit { seq: self.pin_commit.seq.wrapping_add(1), recorded: produced.is_some() };
         // Reconcile the pending selection immediately. Until its receipt lands, a captured
         // older session must not undo the viewer's edits. This is not a durability claim.
         match produced {
@@ -3721,8 +3741,8 @@ impl SecKind {
     /// The same thing as a standalone label ("Films"), for a row whose count has not landed yet.
     pub fn plural(self) -> &'static str {
         match self {
-            SecKind::Movie => plx_platform::i18n::msg::browse_kind_films(),
-            SecKind::Show => plx_platform::i18n::msg::browse_kind_tv_shows_sentence(),
+            SecKind::Movie => plx_os::i18n::msg::browse_kind_films(),
+            SecKind::Show => plx_os::i18n::msg::browse_kind_tv_shows_sentence(),
         }
     }
 }
@@ -3760,7 +3780,7 @@ fn kind_offers_plays_sort(kind: SecKind) -> bool {
 /// feature exists for.
 fn with_plays_sort(mut sorts: Vec<SortEntry>, kind: SecKind) -> Vec<SortEntry> {
     if kind_offers_plays_sort(kind) && !sorts.iter().any(|sort| sort.key == PLAYS_SORT_KEY) {
-        sorts.push(plays_sort_entry(plx_platform::i18n::msg::browse_library_plays().into()));
+        sorts.push(plays_sort_entry(plx_os::i18n::msg::browse_library_plays().into()));
     }
     sorts
 }
@@ -4563,7 +4583,7 @@ mod localized_type_tests {
 
     #[test]
     fn library_type_titles_translate_without_changing_the_pms_query_type() {
-        use plx_platform::i18n::{LocaleContext, Preference};
+        use plx_os::i18n::{LocaleContext, Preference};
         for (preference, expected) in [
             (Preference::En, ["Movies", "Collections", "TV Shows", "Seasons", "Episodes", "Collections"]),
             (Preference::Es, ["Películas", "Colecciones", "Series", "Temporadas", "Episodios", "Colecciones"]),
