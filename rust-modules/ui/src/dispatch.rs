@@ -2653,7 +2653,6 @@ where
         let modals = &mut nav.modals;
         use super::containers::modal::{DimSink, GlDims};
         let opaque = modals.first_opaque();
-        static FLAT: crate::underlay::UnderlayField = crate::underlay::UnderlayField::new();
         let (mut drain_surface_text, mut capture_surface) = (false, false);
         for (index, s) in modals.surfaces.iter_mut().enumerate() {
             let z = Z::surface(index);
@@ -2662,6 +2661,7 @@ where
             if (if over_opaque { scrim_z } else { z }) >= ceiling { break; }
             if s.faded() { continue; }
             let field = if over_opaque {
+                let flat = modals.underlay.flat_field();
                 // The frozen page does not include the opaque host. Use the shared flat ink
                 // and composite it here so it covers that host without dimming the popup.
                 let alpha = s.scrim_alpha(navigation.page_alpha);
@@ -2669,10 +2669,10 @@ where
                     let _dim_layer = backdrop::layer(scrim_z, false);
                     let _scope = rig.surface_scope();
                     backdrop::draw_span("scrims", || {
-                        crate::popover_glass::dim_owner(index, || GlDims::new(present).dim(&FLAT, alpha));
+                        crate::popover_glass::dim_owner(index, || GlDims::new(present).dim(flat, alpha));
                     });
                 }
-                &FLAT
+                flat
             } else {
                 modals.underlay.field()
             };

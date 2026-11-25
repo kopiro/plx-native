@@ -585,6 +585,7 @@ impl DimSink for GlDims<'_> {
 /// artwork colour), and when [`ModalStack::prune`] retires the last surface.
 pub struct ModalUnderlay {
     field: crate::underlay::UnderlayField,
+    flat: crate::underlay::UnderlayField,
     held: Latched,
     /// A page read queued and not yet landed: the epoch it reads, and its ticket.
     pending: Option<(u32, plx_gfx::gfx::FieldTicket)>,
@@ -594,6 +595,7 @@ impl ModalUnderlay {
     pub const fn new() -> Self {
         Self {
             field: crate::underlay::UnderlayField::new(),
+            flat: crate::underlay::UnderlayField::new(),
             held: Latched::Nothing,
             pending: None,
         }
@@ -607,6 +609,11 @@ impl ModalUnderlay {
 
     pub fn field(&self) -> &crate::underlay::UnderlayField {
         &self.field
+    }
+
+    /// The neutral underlay for a panel above an opaque surface. It never latches a page.
+    pub(crate) fn flat_field(&self) -> &crate::underlay::UnderlayField {
+        &self.flat
     }
 
     pub fn held(&self) -> Latched {
