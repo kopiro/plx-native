@@ -274,6 +274,7 @@
   "browse.detail.mark_episode_watched": "Epizód megjelölése megnézettként",
   "browse.detail.mark_episode_unwatched": "Epizód megjelölése nem megnézettként",
   "browse.detail.minutes_left": "{minutes} perc van hátra",
+  "browse.server_security.notice": "Biztonsági frissítés szükséges: frissítse a(z) {name} Plex-kiszolgálót.",
   "browse.delete.action": "Törlés…",
   "browse.delete.question": "Törlöd ezt az elemet?",
   "browse.delete.leaf": "Törli az elemet és az összes fájlváltozatát a Plex szerverről. Ez a művelet nem vonható vissza.",

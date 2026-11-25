@@ -274,6 +274,7 @@
   "browse.detail.mark_episode_watched": "Aflevering markeren als bekeken",
   "browse.detail.mark_episode_unwatched": "Aflevering markeren als niet bekeken",
   "browse.detail.minutes_left": "Nog {minutes} min",
+  "browse.server_security.notice": "Werk Plex-server {name} bij voor de beveiliging.",
   "browse.delete.action": "Verwijderen…",
   "browse.delete.question": "Dit item verwijderen?",
   "browse.delete.leaf": "Verwijdert het item en alle bestandsversies van je Plex-server. Dit kan niet ongedaan worden gemaakt.",

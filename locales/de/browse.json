@@ -274,6 +274,7 @@
   "browse.detail.mark_episode_watched": "Episode als gesehen markieren",
   "browse.detail.mark_episode_unwatched": "Episode als ungesehen markieren",
   "browse.detail.minutes_left": "Noch {minutes} Min.",
+  "browse.server_security.notice": "Plex-Server {name} benötigt ein Sicherheitsupdate.",
   "browse.delete.action": "Löschen…",
   "browse.delete.question": "Dieses Element löschen?",
   "browse.delete.leaf": "Löscht das Element und alle Dateiversionen vom Plex-Server. Dies kann nicht rückgängig gemacht werden.",

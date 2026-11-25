@@ -298,6 +298,7 @@
   "browse.detail.mark_episode_watched": "Пазначыць серыю прагледжанай",
   "browse.detail.mark_episode_unwatched": "Пазначыць серыю непрагледжанай",
   "browse.detail.minutes_left": "Засталося {minutes} хв",
+  "browse.server_security.notice": "Абнавіце сервер Plex «{name}»: патрэбнае выпраўленне бяспекі.",
   "browse.delete.action": "Выдаліць…",
   "browse.delete.question": "Выдаліць гэты элемент?",
   "browse.delete.leaf": "Выдаляе элемент і ўсе версіі яго файлаў з сервера Plex. Гэта дзеянне нельга адмяніць.",

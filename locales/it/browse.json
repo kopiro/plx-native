@@ -286,6 +286,7 @@
   "browse.detail.mark_episode_watched": "Segna episodio come visto",
   "browse.detail.mark_episode_unwatched": "Segna episodio come non visto",
   "browse.detail.minutes_left": "{minutes} min rimanenti",
+  "browse.server_security.notice": "Aggiorna il server Plex {name} per sicurezza.",
   "browse.delete.action": "Elimina…",
   "browse.delete.question": "Eliminare questo elemento?",
   "browse.delete.leaf": "Elimina l'elemento e tutte le versioni dei file dal server Plex. Questa operazione non può essere annullata.",

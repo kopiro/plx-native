@@ -286,6 +286,7 @@
   "browse.detail.mark_episode_watched": "Marca l'episodi com a vist",
   "browse.detail.mark_episode_unwatched": "Marca l'episodi com a no vist",
   "browse.detail.minutes_left": "Queden {minutes} min",
+  "browse.server_security.notice": "Actualitzeu el servidor Plex {name} per seguretat.",
   "browse.delete.action": "Suprimeix…",
   "browse.delete.question": "Voleu suprimir aquest element?",
   "browse.delete.leaf": "Suprimeix l'element i totes les versions dels fitxers del servidor Plex. Aquesta acció no es pot desfer.",
