@@ -10,7 +10,8 @@
    "mock": "empty",
    "mock_extra": {"guids": "all"},
    "triggers": {"detail": "1001", "detailsec": "1", "detailok": "", "filmography": "", "focus": ""},
-   "keys": ["down", "down", "hold"],
+   "keys": ["focus:filmography.row.1", "hold"],
+   "expect_focus": "itemmenu.watchlist_add",
    "expect_log": "overlay=itemmenu"
   },
   {
@@ -19,7 +20,8 @@
    "mock": "empty",
    "mock_extra": {"guids": "all"},
    "triggers": {"detail": "1001", "detailsec": "1", "detailok": "", "filmography": "", "focus": ""},
-   "keys": ["down", "down", "hold", "ok"],
+   "keys": ["focus:filmography.row.1", "hold", "ok"],
+   "expect_focus": "filmography.row.1",
    "expect_write": "PUT /actions/addToWatchlist"
   },
   {
