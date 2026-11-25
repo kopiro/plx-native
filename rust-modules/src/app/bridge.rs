@@ -3154,7 +3154,7 @@ impl Bridge<'_> {
         let outcome = match command.effect {
                     Ok(ExternalAppFx::MediaDelete(request)) => {
                         let mut out = Effects::new(&mut emitted, command.from, &mut d.present);
-                        self.media_delete_effect(command.from, request, &mut out);
+                        self.execute_media_delete(command.from, request, &mut out);
                         AppCommandOutcome::Completed
                     }
                     Ok(ExternalAppFx::SessionEffect(effect)) => {
@@ -3491,7 +3491,7 @@ impl Bridge<'_> {
         Some(result)
     }
 
-    fn media_delete_effect(&mut self, from: MachineId, request: plx_screens::registry::MediaDeleteRequest,
+    fn execute_media_delete(&mut self, from: MachineId, request: plx_screens::registry::MediaDeleteRequest,
         out: &mut Effects<'_, AppHost>) {
         let result = self.retained.media_delete.start(from, request);
         out.push(Fx::Deliver(from, Delivery::Screen(ScreenEvent::App(AppMsg::MediaDelete(result)))));
