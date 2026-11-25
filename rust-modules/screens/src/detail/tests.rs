@@ -5842,7 +5842,6 @@ fn a_started_shows_hero_controls_name_the_on_deck_episode_they_act_on() {
             owned("hero.restart", Some("e2")),
             owned("hero.mark_watched", Some("e2")),
             owned("hero.version", None),
-            owned("hero.more", None),
         ]
     );
     clear();

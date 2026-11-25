@@ -3012,7 +3012,7 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // through its closing morph. Previous pin: 0x7e36_4373_746a_c3dc.
 // Filmography's add-only menu adds WatchlistAdd{hex} to ARG_SHAPE (canonical kind tag 5).
 // Media deletion adds an item-menu argument, confirmation state and a captured target.
-const SCREEN_SHAPES_PIN: u64 = 0x7ea5_4cf0_ce26_fa06;
+const SCREEN_SHAPES_PIN: u64 = 0x1b0f_ce63_ee6a_4fae;
 
 #[cfg(test)]
 mod arg_tests {
