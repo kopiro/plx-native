@@ -2647,11 +2647,9 @@ where
         if host_render == HostRender::Cached {
             set.frame_cache_bytes = set.frame_cache_bytes.max(super::frame::FRAME_CACHE_BYTES);
         }
-        // the surfaces, bottom to top; a later stop is above an earlier one. Each is handed the
-        // stack's ONE underlay field — brought up to date by the dims above (from the undimmed
-        // page, or the playing item's envelope, which may be the one kept from an earlier open or
-        // preloaded ahead of it) — which is what a popover panel's ground is drawn from
-        // (`widgets::panel_ground`). Disjoint fields of the stack: the field is only read here.
+        // Draw surfaces bottom to top. Page-backed panels read the stack's latched underlay
+        // for their ground. Panels above an opaque surface use a neutral field and paint their
+        // dim over the opaque host immediately before drawing the panel.
         let modals = &mut nav.modals;
         use super::containers::modal::{DimSink, GlDims};
         let opaque = modals.first_opaque();
