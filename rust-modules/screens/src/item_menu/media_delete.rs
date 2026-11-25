@@ -39,6 +39,7 @@ mod tests {
     fn send(ui: &mut DeleteUi, ev: &ScreenEvent<HostFixture>, elem: u32) -> (bool, usize) {
         with_cx(|base| {
             let cx = Cx { views: base.views, tick: base.tick, measure: base.measure, press: base.press,
+                modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
                 owner: base.owner, focus: plx_machine::machine::FocusRead {
                     current: Some(FocusKey { entry: EntryId(7), elem }), ..Default::default() } };
             let mut out = Vec::new();

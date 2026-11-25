@@ -789,7 +789,7 @@ impl Client {
     pub(super) fn delete_status(&self, path: &str, expected: super::ClientKey) -> Option<i32> {
         if !self.may_send() { return None; }
         let path = self.with_token_at(path, Some(expected))?;
-        let owned = pms_headers(&[ACCEPT_JSON]);
+        let owned = self.pms_headers(&[ACCEPT_JSON]);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
         http::request(&self.origin, &path, Method::Delete, &headers, self.resolve_pin.as_ref())
             .map(|reply| reply.status)

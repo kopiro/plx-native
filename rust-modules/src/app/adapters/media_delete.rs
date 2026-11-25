@@ -2,10 +2,9 @@
 use plx_machine::machine::MachineId;
 use plx_plex::plex::{self, Client, ClientKey, DeleteResult};
 use plx_screens::registry::MediaDeleteRequest;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-fn admitted_client(req: &MediaDeleteRequest) -> Result<Arc<Client>, DeleteResult> {
+fn admitted_client(req: &MediaDeleteRequest) -> Result<&'static Client, DeleteResult> {
     let profile = plex::session::current_snapshot();
     let session = plex::session::peek_settled().ok_or(DeleteResult::IdentityChanged)?;
     if profile.generation != req.profile {

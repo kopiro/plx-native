@@ -289,6 +289,7 @@ impl ItemRow {
             ItemRow::WatchlistAdd => "watchlist_add",
             ItemRow::PlayVersion => "play_version",
             ItemRow::Version(_) => "version",
+            ItemRow::Delete => "delete",
         }
     }
 }
@@ -761,7 +762,7 @@ impl ItemMenuScreen {
         let form = if self.deletion.request.is_some() {
             form.section(FormSection::new("").item(ItemRow::Delete, RowKind::Button,
                 Action::Delete(self.arg.rk.clone()),
-                Row::new(plx_platform::i18n::msg::browse_delete_action()).licon(Icon::Trash).danger()))
+                Row::new(plx_os::i18n::msg::browse_delete_action()).licon(Icon::Trash).danger()))
         } else { form };
         self.form.set(form, None);
     }

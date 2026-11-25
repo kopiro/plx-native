@@ -6072,7 +6072,7 @@ pub(crate) fn detail_conforms() -> plx_ui::a11y::Namespaces {
     screen.season_metrics.update(test_store().view().current().expect("the page's detail is mounted"), &plx_ui::fixture::FixtureMeasure);
     static MEASURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
     let cx = Cx {
-        views: (),
+        views: crate::registry::caption_fixture(),
         tick: plx_machine::machine::Tick { ms: 0, dt_us: 16_667 },
         measure: &MEASURE,
         modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
