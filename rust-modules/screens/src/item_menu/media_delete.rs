@@ -85,27 +85,58 @@ mod tests {
         assert_eq!(ui.phase, 2);
     }
 
-    #[test]
-    fn the_detail_menu_only_offers_delete() {
-        let _guard = plx_base::testlock::serial();
-        let arg = ItemMenuArg { sid: plx_plex::plex::ServerId::UNSET, rk: "42".into(),
-            kind: ItemMenuKind::Detail { kind: 0, title: "Disposable movie".into(),
-                show_rk: String::new() },
+    fn hero_arg(rows: Vec<HeroCtl>) -> ItemMenuArg {
+        // `rk` is what the hero's Play acts on (a show page's next-up episode); Delete names the page's show.
+        ItemMenuArg { sid: plx_plex::plex::ServerId::UNSET, rk: "on-deck".into(),
+            kind: ItemMenuKind::HeroOverflow { rows, opener: InstanceId(4),
+                delete: Some(crate::registry::HeroDelete { rk: "42".into(), kind: 1,
+                    title: "Disposable show".into(), show_rk: String::new() }) },
             host: EntryId(1), focus: None, anchor: [0; 4], loaded_episode: false,
-            from_home: false, catalog: None, watchlist: None };
-        let mut menu = ItemMenuScreen::new(EntryId(7), arg);
-        menu.deletion = question();
-        with_cx(|cx| menu.build_rows(<HostFixture as crate::registry::MetadataLike>::metadata(cx), DeckPress::Details));
-        assert!(matches!(menu.form.binding_at(0), Some(binding) if binding.id == ItemRow::Delete));
-        assert!(menu.form.binding_at(1).is_none());
+            from_home: false, catalog: None, watchlist: None }
+    }
+
+    /// The hero's … holds the round buttons' overflow rows and then Delete, which names the page's own item.
+    #[test]
+    fn the_hero_overflow_ends_with_delete_for_the_pages_item() {
+        let _guard = plx_base::testlock::serial();
+        for rows in [Vec::new(), vec![HeroCtl::Restart, HeroCtl::Version]] {
+            let mut menu = ItemMenuScreen::new(EntryId(7), hero_arg(rows.clone()));
+            let mut inputs = crate::registry::ScreenInputs::default();
+            inputs.deletable = std::sync::Arc::new(vec![(plx_plex::plex::ServerId::UNSET,
+                plx_plex::plex::ClientKey { instance: 1, token: 2, grant: 3 })]);
+            with_cx(|cx| menu.deletion.capture(&menu.arg, <HostFixture as crate::registry::MetadataLike>::metadata(cx), &inputs));
+            let req = menu.deletion.request.clone().expect("deletion is offered on this server");
+            assert_eq!((req.rk.as_str(), req.kind), ("42", 1), "the page's show, not the next-up episode");
+            with_cx(|cx| menu.build_rows(<HostFixture as crate::registry::MetadataLike>::metadata(cx), DeckPress::Details));
+            for (i, ctl) in rows.iter().enumerate() {
+                assert!(matches!(menu.form.binding_at(i), Some(binding) if binding.id == ItemRow::Hero(*ctl)));
+            }
+            assert!(matches!(menu.form.binding_at(rows.len()), Some(binding) if binding.id == ItemRow::Delete));
+            assert!(menu.form.binding_at(rows.len() + 1).is_none());
+        }
+    }
+
+    /// Without the server's permission the hero's … offers no Delete, whatever the page captured.
+    #[test]
+    fn the_hero_overflow_offers_no_delete_without_permission() {
+        let _guard = plx_base::testlock::serial();
+        let mut menu = ItemMenuScreen::new(EntryId(7), hero_arg(vec![HeroCtl::Restart, HeroCtl::Version]));
+        with_cx(|cx| menu.deletion.capture(&menu.arg, <HostFixture as crate::registry::MetadataLike>::metadata(cx), cx.views));
+        assert!(menu.deletion.request.is_none());
     }
 }
 impl DeleteUi {
     pub fn new() -> Self { Self { request: None, title: String::new(), alert: DecisionAlert::new(), phase: 0, result: None } }
     pub fn capture(&mut self, arg: &ItemMenuArg, meta: plx_data::metadata::MetadataView<'_>, inputs: &crate::registry::ScreenInputs) {
         let Some((_, key)) = inputs.deletable.iter().find(|(sid, _)| *sid == arg.sid) else { return };
+        // The target is the menu's own item, except under the Detail hero's …, whose `rk` is what Play
+        // acts on (a show page's next-up episode): there it is the page's item the page captured.
+        let mut rk = arg.rk.clone();
         let (kind, title, show_rk) = match &arg.kind {
-            ItemMenuKind::Detail { kind, title, show_rk, .. } => (*kind, title.clone(), show_rk.clone()),
+            ItemMenuKind::HeroOverflow { delete: Some(subject), .. } => {
+                rk = subject.rk.clone();
+                (subject.kind, subject.title.clone(), subject.show_rk.clone())
+            }
             ItemMenuKind::Card { row, .. } if (0..=3).contains(&row.kind) =>
                 (row.kind, row.title.clone(), row.show_rk.clone()),
             ItemMenuKind::Episode { .. } => {
@@ -120,8 +151,8 @@ impl DeleteUi {
             }
             _ => return,
         };
-        if arg.rk.is_empty() || title.is_empty() { return; }
-        self.request = Some(MediaDeleteRequest { sid: arg.sid, rk: arg.rk.clone(), kind, show_rk,
+        if rk.is_empty() || title.is_empty() { return; }
+        self.request = Some(MediaDeleteRequest { sid: arg.sid, rk, kind, show_rk,
             profile: inputs.profile.generation, key: *key });
         self.title = title;
     }
