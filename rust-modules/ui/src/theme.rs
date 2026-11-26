@@ -279,11 +279,17 @@ pub mod hero {
 /// Shared ink and geometry for the continuous Home and Detail edge fields and Catalog's
 /// feathered content blocks. Both field types use `gfx::scrim::GroundShade`.
 pub mod shade {
-    /// Detail needs legibility farther into the art for its wider title and synopsis.
-    pub const DETAIL_SIDE_X: [f32; 2] = [600.0, 1700.0];
-    /// Normal vertical entrance of the Detail shade.
-    pub const DETAIL_SIDE_Y: [f32; 2] = [120.0, 400.0];
-    /// Shift the fade upward as the preview logo travels into the corner.
+    /// **Detail's side shade is an ellipse about the screen's bottom-left corner** (`gfx::scrim::SideShade`):
+    /// nothing on and outside these semi-axes (x along the bottom, y up the left edge), so on the
+    /// left edge it starts at y = 120, where the box it replaced started, and never sooner; wide,
+    /// so its iso-lines run in one long arc over the title's right end down toward the bottom-right.
+    pub const DETAIL_SIDE_REACH: [f32; 2] = [2200.0, 960.0];
+    /// **How far inside that ellipse the shade rises to full strength**, in px along its shorter
+    /// axis (wider along the longer one): a smoothstep, so the shade never changes faster than
+    /// `1.5 * DETAIL_SIDE_A / DETAIL_SIDE_FEATHER` per px in any direction. Wide on purpose: a
+    /// narrower band reads as an edge, which a tester took for a backlight fault (discussion #1460).
+    pub const DETAIL_SIDE_FEATHER: f32 = 380.0;
+    /// Grow the side shade's reach upward as the preview logo travels into the corner.
     pub const DETAIL_PREVIEW_RISE: f32 = 260.0;
     /// Full-width top fade behind the compact preview title and the full-screen hint.
     pub const DETAIL_PREVIEW_TOP_Y: [f32; 2] = [20.0, 245.0];
@@ -295,7 +301,10 @@ pub mod shade {
     /// Inactive pagination dots still need contrast against the art.
     pub const PAGER_IDLE_A: f32 = 0.50;
 
-    /// Home starts feathering inside the copy column and keeps its right edge legible.
+    /// Home starts feathering inside the copy column and keeps its right edge legible. Home's side
+    /// is still the box (`gfx::scrim::SideShade::Box`): its copy runs to x = 1039 and its right edge
+    /// must be clear above the shelf, and no ellipse with Detail's soft feather and a top-left no
+    /// higher than this box's holds the title's floor in that 880 px.
     pub const HOME_SIDE_X: [f32; 2] = [850.0, 1650.0];
     /// Where the edge shade begins and reaches full strength down the screen.
     pub const HOME_SIDE_Y: [f32; 2] = [110.0, 405.0];
@@ -806,6 +815,9 @@ pub const CARD_ABSENT: [f32; 4] = COOL_850;
 /// the top bar's own tone). A logo is drawn contained on it ([`logo::CHANNEL_AREA`]), so a mark on a
 /// transparent ground reads the same whatever the channel's brand colour is.
 pub const CHANNEL_PLATE: [f32; 4] = COOL_825;
+/// [`CHANNEL_PLATE`] as the bytes a one-texel ground texture carries (a poster tile that contains a
+/// picture with a transparent ground, [`crate::art_fit::BackdropSpec::ground`]). Pinned equal by a test.
+pub const CHANNEL_PLATE_RGB8: [u8; 3] = [0x22, 0x27, 0x2d];
 /// Loading-skeleton gradient — top. The same `COOL_850` stop as [`CARD_PLACEHOLDER`]: a card whose
 /// artwork is on the way and one with none to load are the same object at rest. Both lean BLUE,
 /// away from the neutral panel greys, so a missing poster never reads as a panel. The sentinel
@@ -1396,6 +1408,11 @@ pub const PILL_KEYLINE_BG: [f32; 4] = scrim_black(0.55);
 pub const BADGE_FILL: [f32; 4] = with_a(COOL_150, 0.20);
 /// No-op texture tint (structural: draw an RGBA texture unmodified).
 pub const TINT_WHITE: [f32; 4] = WHITE;
+/// The brightness the blurred copy a tile draws BEHIND its contained art keeps
+/// ([`crate::art_fit::backdrop_of`], baked into the copy when it is made): the picture's own colours at
+/// 55%, so the whole picture laid on top of it reads as the subject and the backdrop as its ground,
+/// never as two competing pictures. A flat ground ([`CHANNEL_PLATE`]) is drawn as it is, undimmed.
+pub const ART_BACKDROP_DIM: f32 = 0.55;
 
 // ── Review-score marks (detail hero ratings row) ─────────────────────────────
 // These used to be the ONE place the palette borrowed someone else's colour, justified by the
