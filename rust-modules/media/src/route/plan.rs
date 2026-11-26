@@ -431,7 +431,7 @@ pub(super) fn classify_prime_decision(
 /// the claim's inputs), for the same reason: the profile PMS reads is built from it, so it is the
 /// value the plan chose its tracks from and no function here consults the process-wide answer.
 pub(super) fn transcode_spec<'a>(
-    caps: &'a plx_platform::devcaps::Caps,
+    caps: &'a plx_os::devcaps::Caps,
     rk: &'a str,
     media_index: usize,
     session: &'a str,
@@ -455,7 +455,7 @@ pub(super) fn transcode_spec<'a>(
 /// `ResolveEnv::sub_sid` is a burn the session was already carrying (`build_stream` keeps its
 /// remux-shaped contract and the server re-encodes for the burn), which the rule must not erase.
 pub(super) fn transcode_spec_carrying_burn<'a>(
-    caps: &'a plx_platform::devcaps::Caps,
+    caps: &'a plx_os::devcaps::Caps,
     rk: &'a str,
     media_index: usize,
     session: &'a str,
@@ -467,7 +467,7 @@ pub(super) fn transcode_spec_carrying_burn<'a>(
     contract: plx_plex::plex::EncodeContract,
 ) -> plx_plex::plex::TranscodeSpec<'a> {
     plx_plex::plex::TranscodeSpec {
-        rating_key: rk,
+        source: plx_plex::plex::TranscodeSource::Library(rk),
         media_index,
         session,
         encoder_session,
@@ -956,7 +956,7 @@ fn decision_audio(mc: &plx_plex::plex::MediaContainer) -> Option<&str> {
 /// anyway: `Unverified` (M2's AAC 5.1 under the measured profile).
 /// No answer at all is `Unverified` for the same reason.
 pub(super) fn classify_outcome(
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     mc: Option<&plx_plex::plex::MediaContainer>,
     carried: Option<&CarriedAudio>,
     audio: plx_plex::plex::AudioEnhancements,
@@ -1121,7 +1121,7 @@ pub(super) fn decision_copies_video(mc: &plx_plex::plex::MediaContainer, remux: 
 /// and a quoted line can tell it from a failed probe or a set without Dolby Vision.
 pub fn frozen_dv_decision(
     mode: plx_plex::plex::session::DolbyVisionMode,
-    probed: plx_platform::devcaps::dv::DvCapability,
+    probed: plx_os::devcaps::dv::DvCapability,
     dovi: plx_data::metadata::Dovi,
     vcodec: &str,
 ) -> plx_data::metadata::DvDecision {
@@ -1216,6 +1216,8 @@ pub enum PlayVerdict {
     PreviewNeedsDirectPlay { reason: plx_telemetry::telemetry::classes::PreviewRefusal },
     /// This build has no Feed executor and no source-specific URI qualification was granted.
     NoQualifiedBackend,
+    /// The DVR refused the tune because no tuner was available.
+    TunersBusy,
 }
 
 /// The limitation a Force Direct Play verdict names. Each one carries the same recovery step.
@@ -1241,13 +1243,14 @@ impl PlayVerdict {
     /// Borrowed for every sentence but the two that name a codec, which are formatted (an
     /// allocation on the failure path only).
     pub fn text(&self) -> std::borrow::Cow<'_, str> {
-        use plx_platform::i18n::msg;
+        use plx_os::i18n::msg;
         use std::borrow::Cow::{Borrowed, Owned};
         match self {
             Self::Server(sentence, _) => Borrowed(sentence),
             Self::DirectPlayDisabled => Borrowed(msg::widgets_verdict_direct_play_disabled()),
             Self::PreviewNeedsDirectPlay { .. } => Borrowed(msg::widgets_reason_open()),
             Self::NoQualifiedBackend => Borrowed(msg::widgets_reason_open()),
+            Self::TunersBusy => Borrowed(msg::widgets_verdict_tuners_busy()),
             Self::Forced(why) => match why {
                 ForcedFailure::NoOriginal => Borrowed(msg::widgets_verdict_forced_no_original()),
                 ForcedFailure::Container => Borrowed(msg::widgets_verdict_forced_container()),
@@ -1357,6 +1360,13 @@ pub(super) fn up_next_of(r: &plx_plex::plex::QueueRow) -> Option<UpNext> {
     })
 }
 
+/// A Live TV channel to tune instead of a library item to resolve: the `{dvr}` and `{channel}` of
+/// `plx_plex::plex::livetv::tune_path`. A request that carries one has no `rk` and no `part`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveTune {
+    pub dvr: String,
+    pub channel: String,
+}
 
 /// Every piece of [`Session`] the resolve used to READ, captured on the main thread and passed by
 /// value.
@@ -1403,6 +1413,10 @@ pub struct ResolveEnv {
     pub forced_lang: String,
     /// the loaded detail's streams when it IS this item — saves the worker a GET
     pub cached_item: Option<plx_data::metadata::PlayingItem>,
+    /// The viewer's pre-play picks for this item, one per file (`MetadataView::picks_of`), captured
+    /// at the press. Applied to the item whichever way it arrives (the page's copy, a default fetch
+    /// or a named version's fetch) in one place, [`plx_data::metadata::PreplayPick::apply`].
+    pub picks: Vec<plx_data::metadata::PreplayPick>,
     /// The version the viewer picked (Play Version); `None` plays the default. A picked version
     /// never uses `cached_item`, which describes the default.
     pub version: Option<plx_plex::plex::MediaId>,
@@ -1426,12 +1440,12 @@ pub struct ResolveEnv {
     /// The set's Dolby Vision answer (`devcaps::dv::capability`), read once at the request beside
     /// the mode so the worker never reads the process cache. A regression sets it directly: no
     /// test mutates the production `OnceLock` or makes the whole host a DV set.
-    pub dv_capability: plx_platform::devcaps::dv::DvCapability,
+    pub dv_capability: plx_os::devcaps::dv::DvCapability,
     /// **The capability value this attempt plans from**, copied off the session
     /// ([`PlaybackSession::attempt_caps`]) beside the quality and the mode, so the worker never reads the
     /// process-wide capability answer: every direct-play gate, the audio pick and the transcode
     /// profile of this resolve are derived from this one value.
-    pub caps: std::sync::Arc<plx_platform::devcaps::Caps>,
+    pub caps: std::sync::Arc<plx_os::devcaps::Caps>,
     /// The playback backends composed for this session, copied off it like the capability value
     /// above: the worker plans Feed work only when Feed is among them.
     pub backends: plx_playback_contract::BackendSet,
@@ -1443,10 +1457,11 @@ pub struct ResolveEnv {
     pub feed_original_eligible: bool,
     pub requested_rate_permille: i32,
     pub resume_ns: i64,
-    /// The SOURCE's whole-stream bitrate in **kbps**, or `0` when nobody has measured it — the
-    /// other half of what [`quality_policy`] needs, beside the frame size the playing-item store
-    /// already carries. It measures the first version: when the worker plays another one instead,
-    /// [`build_stream`] measures that version's own `PlayingItem::bitrate`.
+    /// The SOURCE's rate for the quality ceiling in **kbps**, the video stream's own else the whole
+    /// file's (`ceiling_kbps`), or `0` when nobody has measured it — the other half of what
+    /// [`quality_policy`] needs, beside the frame size the playing-item store already carries. It
+    /// measures the first version: when the worker plays another one instead, [`build_stream`]
+    /// measures that version's own `PlayingItem::video_kbps`, else its `PlayingItem::bitrate`.
     ///
     /// It comes off the LOADED DETAIL (`metadata::current().bitrate`, `Media[0]`) when that detail
     /// is this item, which is the ordinary path: a card's OK opens the detail page and Play is
@@ -1488,6 +1503,8 @@ pub struct ResolveEnv {
     /// every environment through), so nothing can default it on.
     pub fresh_play: bool,
     pub selection_before_retry: Option<SelectionBeforeRetry>,
+    /// A Live TV channel to tune ([`build_live_stream`]); `None` for every library item.
+    pub live: Option<LiveTune>,
     /// Test-only account subtitle preferences `(language, mode, forced)`, standing in for the
     /// plex.tv call a unit test cannot make.
     #[cfg(any(test, feature = "test-support"))]
@@ -1505,6 +1522,27 @@ pub struct SelectionBeforeRetry {
 }
 
 impl ResolveEnv {
+    /// **The pre-play picks that feed this resolve**: the viewer's own launch's. A hero preview is not a
+    /// playback the viewer started, and a retry that carries a selection (`selection_before_retry`) plans
+    /// from the pair its attempt held, which outranks a pick made before the first start. Every other
+    /// resolve (a fresh launch, and a retry that held nothing because its first resolve failed before the
+    /// item was fetched) is fed the picks. The ONE gate both halves of a pick go through
+    /// ([`PlayingItem::apply_picks`], the subtitle half, and [`Self::under_pick`], the audio half), and
+    /// what the plan is planned under; the spend of a pick is not decided here (`route::apply_plan`).
+    pub(super) fn picks_in_force(&self) -> &[plx_data::metadata::PreplayPick] {
+        if self.preview || self.selection_before_retry.is_some() { &[] } else { &self.picks }
+    }
+
+    /// **The viewer's pre-play audio pick as the plan's session audio**, when it is for the file whose part is `part_id` and
+    /// [`Self::picks_in_force`] feeds this resolve: a retry that carries the attempt's held pair has that
+    /// pair instead, and a fresh launch's `audio_sid` is only what the session last had on screen (another
+    /// item's track), never a choice for this one. The single place the pick's `audio_sid` becomes
+    /// `audio_sid`; the same gate as the subtitle half, so the two cannot disagree.
+    pub(super) fn under_pick(&self, part_id: i64) -> Option<ResolveEnv> {
+        let pick = plx_data::metadata::PreplayPick::for_file(self.picks_in_force(), part_id)?;
+        Some(ResolveEnv { audio_sid: pick.audio_sid, ..self.clone() })
+    }
+
     pub(super) fn with_selection_for_part(&self, part_id: i64) -> Option<ResolveEnv> {
         let before = self
             .selection_before_retry
@@ -1525,7 +1563,7 @@ impl ResolveEnv {
 
 /// Does the loaded detail describe the leaf `rk` is about to play?
 ///
-/// **Its own ratingKey, OR its on-deck episode's** — and the second half is not an optimisation.
+/// **Its own ratingKey, OR the episode that supplied its stream facts** — and the second half is not an optimisation.
 /// A SHOW's `Detail.rk` is the show's key while the play `rk` is the EPISODE's, so an rk-only test
 /// (which is all `cached_playing` needs, because it is fetching stream lists a show container does
 /// not have) never matches on the commonest path in the app: press Play on a show page. With a
@@ -1534,19 +1572,16 @@ impl ResolveEnv {
 /// Direct Play for it. Two answers to one question, which is the mismatch that preview exists to
 /// prevent.
 ///
-/// The show's technical fields ARE the on-deck episode's: `metadata::fetch_item_streams` backfills
-/// them from exactly the leaf `playback_preview` answers for. An episode reached some OTHER way (a
-/// season list, Up Next) still measures 0 and still fails closed — honest, and the residue that
-/// `PlayingItem` carrying its own bitrate would close (`ResolveEnv::src_kbps`).
+/// A show borrows its technical fields from the hero episode at load time. A later season
+/// selection can change the Play target, so the source rate follows the stored episode key.
+///
 ///
 /// The SERVER half of the test is load-bearing on both arms: a ratingKey names an item only within
 /// one server, so a bare-rk match against a colliding item on the other machine would hand the
 /// ceiling the wrong file's bitrate.
 pub(super) fn detail_describes(d: &plx_data::metadata::Detail, sid: ServerId, rk: &str) -> bool {
     plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk))
-        || d.on_deck
-            .as_ref()
-            .is_some_and(|ep| plx_plex::plex::same_item((d.sid, &ep.rk), (sid, rk)))
+        || d.stream_episode_key().is_some_and(|key| plx_plex::plex::same_item((d.sid, key), (sid, rk)))
 }
 
 
@@ -1565,10 +1600,11 @@ pub(super) fn detail_describes(d: &plx_data::metadata::Detail, sid: ServerId, rk
 /// enough that the whole-file fallback has to stay. Falling back is the conservative direction,
 /// which is the right one here — see [`plx_plex::plex::Ceiling::admits`].
 pub(super) fn source_kbps(d: &plx_data::metadata::Detail) -> i64 {
-    match d.video.as_ref().map(|v| v.bitrate) {
-        Some(b) if b > 0 => b,
-        _ => d.bitrate,
-    }
+    ceiling_kbps(d.video.as_ref().map_or(0, |v| v.bitrate), d.bitrate)
+}
+
+pub(super) fn ceiling_kbps(video_kbps: i64, whole_kbps: i64) -> i64 {
+    if video_kbps > 0 { video_kbps } else { whole_kbps }
 }
 
 /// Rate the quality ceiling judges for this play. A trailer extra is a different file from the
@@ -1664,6 +1700,8 @@ pub struct Plan {
     /// are what a later rebuild that copies the video hands on again.
     pub src_dovi: plx_data::metadata::Dovi,
     pub src_dv_decision: plx_data::metadata::DvDecision,
+    /// [`super::decision::RpuDv`], frozen here: Closed for a file with a record and for a URI Original.
+    pub(super) rpu_dv: super::decision::RpuDv,
     /// Does the direct-played audio track carry Dolby Atmos, for the Load payload's
     /// `contents.immersive` node. Set on the DIRECT-PLAY branch only, for the same reason `dovi`
     /// is: it describes the FILE's own elementary stream.
@@ -1737,6 +1775,10 @@ pub struct Plan {
     /// rides along so the read-out can quote the server instead of guessing. `None` on every other
     /// plan, including one that simply failed to reach the server.
     pub verdict: Option<PlayVerdict>,
+    /// The Live TV session a tune opened on the server, set as soon as the tune answered — before
+    /// the plan has a URL — so a plan that is abandoned, refused or installed always names the
+    /// recording its stop must end (`livetv::Client::live_timeline`).
+    pub live: Option<plx_plex::plex::livetv::LiveSession>,
     /// the episode queued after this one, straight off the `continuous=1` PlayQueue
     pub up_next: Option<UpNext>,
     /// that same PlayQueue's whole returned window, projected on the worker (see `queue`)
@@ -1816,10 +1858,20 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             source_decodable: true,
             ..Default::default()
         };
+        // The server's client is read once, ahead of the Live TV branch: both resolves make their
+        // PMS calls through it, and a server that is gone ends either one the same way.
+        let client = plx_plex::plex::client_for(env.sid);
+        if let Some(tune) = &env.live {
+            let mut plan = base_plan();
+            if let Some(client) = client {
+                build_live_stream(off, tune, client, env, &mut plan);
+            }
+            return plan;
+        }
         if env.direct_play_mode == DirectPlayMode::Disabled && rk.is_empty() {
             return Plan { verdict: Some(PlayVerdict::DirectPlayDisabled), ..base_plan() };
         }
-        let Some(client) = plx_plex::plex::client_for(env.sid) else { return base_plan() };
+        let Some(client) = client else { return base_plan() };
         let forced = env.direct_play_mode == DirectPlayMode::Forced;
         let playback_quality = if forced { Quality::Original } else { env.quality };
         let session = new_sess(rk);
@@ -1894,10 +1946,23 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             plan.playing_fresh = env.cached_item.is_none() && plan.playing.is_some();
             let src_kbps = match (env.version, played.as_ref()) {
                 (None, None) => env.src_kbps,
-                _ => plan.playing.as_ref().map_or(0, |p| p.bitrate),
+                _ => plan.playing.as_ref().map_or(0, |p| ceiling_kbps(p.video_kbps, p.bitrate)),
             };
             let reselected = env.with_selection_for_part(plan.part_id);
             let env = reselected.as_ref().unwrap_or(env);
+            // The viewer's pick before playback (`MetadataState::picks`), whichever way the item
+            // arrived: its flags say what was picked for every later reader (the server-selected
+            // sidecar, the log, the write-back), and `sub_choice` carries the Off no flag can say,
+            // which `pick_subtitle` ranks.
+            if let Some(item) = plan.playing.as_mut() {
+                item.apply_picks(env.picks_in_force(), plan.part_id);
+            }
+            // The audio half rides the same typed door as a retry's: the session's audio pick
+            // (`env.audio_sid`), which [`audio_intents`] ranks first. The `selected` flags the pick
+            // also set cannot carry it for the file's default track (`audio_intents` skips a
+            // selected default, so the account's language would win over the viewer's choice).
+            let under_pick = plan.playing.as_ref().and_then(|_| env.under_pick(plan.part_id));
+            let env = under_pick.as_ref().unwrap_or(env);
             if let (Some(id), Some(item)) = (env.subtitle_override, plan.playing.as_mut()) {
                 // The retry's explicit selection owns both embedded and sidecar restoration; a stale
                 // server-side selection must not turn subtitles back on after the viewer chose Off.
@@ -2057,8 +2122,12 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             if let Some(port) = env.uri_preflight_port.as_ref().filter(|_| plan.uri_decline.is_none()) {
                 let source_kbps = plan.playing.as_ref().map_or(src_kbps, |p|
                     if p.bitrate > 0 { p.bitrate } else { src_kbps });
+                let ceiling_source_kbps = plan.playing.as_ref()
+                    .map(|p| ceiling_kbps(p.video_kbps, p.bitrate))
+                    .filter(|&kbps| kbps > 0)
+                    .unwrap_or(src_kbps);
                 let (width, height) = plan.playing.as_ref().map_or((0, 0), |p| (p.width, p.height));
-                let quality = if forced { Quality::Original } else { env.quality };
+                let quality = playback_quality;
                 // What Standard would decide about this original, from the same rules and the same
                 // frozen inputs it plans from below (the caps, the frozen Dolby Vision decision, the
                 // audio predicate, the container test); the qualifier reads the verdicts and derives
@@ -2088,6 +2157,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     video_codec: vcodec.to_owned(),
                     dolby_vision: dovi,
                     dolby_vision_mode: env.dolby_vision_mode,
+                    dolby_vision_base_layer_only: dv_decision.presentation.declared().is_some()
+                        && !super::uri_preflight::pipeline_carries_dolby_vision(dovi,
+                            part_file_name(part).ends_with(".mkv"), env.caps.dv_matroska),
                     uri_opt_in: env.uri_engine == plx_plex::plex::session::UriEngine::On,
                     standard: super::uri_preflight::StandardDirectPlay {
                         video: source_decodable,
@@ -2101,7 +2173,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     audio_ordinal: source_audio.as_ref().filter(|(position, _, sid)| *position >= 0 && *sid > 0)
                         .map(|(position, _, _)| i64::from(plx_data::metadata::audio_ordinal(tracks, *position as usize))),
                     has_multiple_audio_tracks: tracks.len() > 1,
-                    binding: plx_playback_contract::uri::Binding::Unbound,
+                    audio_language: source_audio.as_ref()
+                        .and_then(|(position, _, _)| usize::try_from(*position).ok().and_then(|i| tracks.get(i)))
+                        .map_or_else(String::new, |track| track.lang_code.clone()),
                     subtitle_source: source_sub_stream.map(|sub| super::uri_preflight::SourceSubtitle {
                         codec: sub.codec.to_lowercase(), embedded: !sub.external }),
                     subtitle_choice,
@@ -2110,7 +2184,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         .filter(|(w, h)| *w > 0 && *h > 0),
                     requested_rate_permille: env.requested_rate_permille,
                     resume_ns: env.resume_ns,
-                    quality_allows_original: quality_policy(quality, true, source_kbps, width, height).direct_play
+                    quality_allows_original: quality_policy(quality, true, ceiling_source_kbps, width, height).direct_play
                         && env.direct_play_mode != DirectPlayMode::Disabled,
                     link_allows_original: client.link() != Some(plx_plex::plex::probe::Location::Relay),
                     auto_allows_original: quality != Quality::Auto
@@ -2136,7 +2210,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     plan.fps = plan.src_fps;
                     plan.audio = plan_track(tracks, source_selection.audio_sid, -1, true);
                     plan.sub_sid = source_selection.subtitle_sid;
-                    plan.src_measure = (source_kbps, width, height);
+                    plan.src_measure = (ceiling_source_kbps, width, height);
                     plan.transport_kbps = source_kbps;
                     plan.uri_original = Some(known);
                     plan.uri_source_ready = true;
@@ -2182,6 +2256,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             plan.source_decodable = video_dp;
             plan.src_dovi = dovi;
             plan.src_dv_decision = dv_decision;
+            plan.rpu_dv = if dovi.present {
+                super::decision::RpuDv::Closed
+            } else {
+                super::decision::RpuDv::Open { mode: env.dolby_vision_mode }
+            };
             // **Refusing direct play is only half of it.** The transcode query below grants the server
             // `directStream=1` — permission to COPY the video rather than encode it — and PMS takes that
             // permission whenever the source fits the caps the query carries. Those caps are resolution,
@@ -2374,7 +2453,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     show_prefs.subtitle_mode
                 ));
             }
-            // The SOURCE's whole-stream bitrate in kbps: the playing item's own, else the caller's.
+            // The SOURCE's whole-stream bitrate in kbps: the playing item's own, else `src_kbps`.
             let source_transport_kbps = plan
                 .playing
                 .as_ref()
@@ -2670,6 +2749,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             // guarding: it is the one place this function does live network I/O before that refusal
             // check, and a preview is exactly the request most likely to hit a non-direct-playable item.
             let preview_already_refused = env.preview && (!directplay || part.is_empty());
+            // The one preflight outcome a preview acts on: the open got no response at all, so nothing
+            // was measured (`RemoteProbe::NoResponse`). See `preview_unmeasured` below.
+            let mut probe_no_response = false;
             let decision = match (playback_quality, link_kind) {
                 (Quality::Auto, Some(link)) => {
                     // The probe is the only expensive input, so it is only taken where it can change the
@@ -2680,10 +2762,12 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         && !preview_already_refused)
                         .then(|| {
                             if directplay {
-                                measure_remote_original(
+                                let probed = measure_remote_original(
                                     &client.direct_play_url(part, &session).to_url(),
                                     source_transport_kbps,
-                                )
+                                );
+                                probe_no_response = matches!(probed, super::decision::RemoteProbe::NoResponse);
+                                probed.sample()
                             } else {
                                 // Part GET 503s after a transcode MDE. Sample the remux we would actually play.
                                 remux_probed = true;
@@ -2729,7 +2813,18 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 plan.auto_prior_kbps = decision.prior.map(|prior| prior.slow_kbps).unwrap_or(0);
                 plan.auto_bootstrap_rung = Some(decision.rung);
             }
-            let auto_original = decision.as_ref().is_some_and(|d| d.original);
+            // **A preview whose preflight got no response plays the Original.** A preview is direct play
+            // or nothing, so Auto's HLS fallback can never serve it: it only turns the preview into a
+            // refusal. When the preflight measured NOTHING (its open failed in the network, #1425: a
+            // trailer reached through two cross-origin redirects; `RemoteProbe::NoResponse`), the refusal
+            // would rest on no evidence about the link, and the preview takes the direct play, as it does
+            // under quality Original. A sample of any kind (`Ok`, even an incomplete one) is the link's own
+            // answer and still decides as it does for a play: a link too slow for the file refuses the
+            // preview, because nothing rescues a direct play that stalls (`auto_original_watched` is false
+            // for a preview, and a Load that fails before a picture arms the preview breaker). A server's
+            // own refusal of the Part is not "no response" either (`RemoteProbe::of_failure`).
+            let preview_unmeasured = env.preview && probe_no_response;
+            let auto_original = decision.as_ref().is_some_and(|d| d.original) || preview_unmeasured;
             let adaptive = auto_uses_hls(playback_quality, auto_original);
             // Whether a direct play was on offer BEFORE the override just below sets `directplay` false
             // for HLS. The preview gate's reason needs it: after the override `directplay` is false for
@@ -2757,7 +2852,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 ));
             } else {
                 plan.contract.ceiling = playback_quality.ceiling();
-                if playback_quality == Quality::Auto {
+                if preview_unmeasured {
+                    crate::player::log(&format!(
+                        "route: Auto preview — the remote Original preflight got no response, so it measured nothing; planned as Original (a preview is direct play or nothing); source {source_transport_kbps}kbps {src_w}x{src_h}"
+                    ));
+                } else if playback_quality == Quality::Auto {
                     crate::player::log(&format!(
                         "route: Auto Original — source {source_transport_kbps}kbps {src_w}x{src_h}; no video encode"
                     ));
@@ -3221,6 +3320,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         if let Some(line) = uri_decline_line(env.uri_engine, &plan) {
             crate::player::log(&line);
         }
+        if let Some(line) = no_backend_line(&plan) {
+            crate::player::log(&line);
+        }
         if let Some(queue) = queue {
             land_queue(&mut plan, queue.finish());
         }
@@ -3237,6 +3339,23 @@ pub(super) fn uri_decline_line(engine: plx_plex::plex::session::UriEngine, plan:
         return None;
     }
     plan.uri_decline.map(|why| format!("uri: original declined ({})", why.log_name()))
+}
+
+/// `play: no backend can carry this play (uri original: <reason>; pms: <reason>)`: the refusal a composition with no Feed ends a
+/// resolve in (`NoQualifiedBackend`), with the plan's own typed reasons. Unlike [`uri_decline_line`] it is for every viewer: the
+/// viewer-facing sentence is the generic open failure, and without this line nothing in the log named why the play was refused.
+/// A reason the resolve never reached reads `not reached`. No title, host, URL or token.
+pub(super) fn no_backend_line(plan: &Plan) -> Option<String> {
+    matches!(plan.verdict, Some(PlayVerdict::NoQualifiedBackend))
+        .then(|| no_backend_text(plan.uri_decline, plan.pms_decline))
+}
+
+/// The text of [`no_backend_line`], for the landing that refuses a play after the plan was made (a prepared offer gone stale).
+pub(super) fn no_backend_text(uri: Option<super::uri_preflight::UriDecline>,
+    pms: Option<super::uri_preflight::PmsDecline>) -> String {
+    format!("play: no backend can carry this play (uri original: {}; pms: {})",
+        uri.map_or("not reached", super::uri_preflight::UriDecline::log_name),
+        pms.map_or("not reached", super::uri_preflight::PmsDecline::log_name))
 }
 
 /// The play queue's answer joins the plan. Destructured whole, so a field `QueueInfo` gains cannot
@@ -3258,6 +3377,125 @@ fn land_queue(plan: &mut Plan, q: QueueInfo) {
 /// the retranscode landing all ask it.
 pub(super) fn video_copy_fps(contract: &plx_plex::plex::EncodeContract, src_fps: f64) -> f64 {
     if contract.remux && !contract.no_video_copy { src_fps } else { 0.0 }
+}
+
+/// Tune once, then use the same decoder predicates and universal-transcoder contract as library
+/// playback. The live session remains owned even when the decision refuses its conversion.
+///
+/// What the set decodes and what the Direct Play setting permits are separate questions.
+/// Disabled never reads the session's own playlist, the "as recorded" fallback included: a
+/// decodable channel is converted and a refused conversion reads out. Forced never asks for a
+/// conversion: a lane the decision named and the reader cannot take is refused with the Forced
+/// read-out, and a playlist with nothing named wrong is read as recorded, as the library's Forced
+/// takes an unnamed codec.
+fn build_live_stream(
+    off: &plx_base::task::OffFrame, tune: &LiveTune, client: &plx_plex::plex::Client,
+    env: &ResolveEnv, plan: &mut Plan,
+) {
+    use plx_plex::plex::livetv::TuneOutcome;
+    use plx_playback_contract::demux::hls_accepts_codecs;
+    let session = new_sess("");
+    plan.sess = session.clone();
+    let live = match client.tune(off, &tune.dvr, &tune.channel, &session) {
+        TuneOutcome::Tuned { session, .. } => session,
+        TuneOutcome::Busy { .. } => { plan.verdict = Some(PlayVerdict::TunersBusy); return; }
+        TuneOutcome::Failed { .. } => {
+            crate::player::log("livetv: tune failed");
+            return;
+        }
+    };
+    plan.live = Some(live.clone());
+    let Some(play) = client.live_part(off, &live, &session) else {
+        crate::player::log("livetv: the decision named no playlist");
+        return;
+    };
+    let video = video_direct_plays(&play.vcodec, play.width, play.height,
+        plx_data::metadata::DvPresentation::NotDv, &env.caps)
+        && hls_accepts_codecs(&play.vcodec, None);
+    let audio = audio_direct_plays_with(&env.caps, env.direct_play_mode,
+        &play.acodec, play.channels, 0);
+    // A playlist no decision described has unknown codecs: not `source_decodable`; who may still
+    // read it as recorded is the mode's call, below.
+    let unknown = play.vcodec.is_empty() || play.acodec.is_empty();
+    plan.source_decodable = !unknown && video && audio && hls_accepts_codecs(&play.vcodec, Some(&play.acodec));
+    plan.src_vcodec = play.vcodec.clone();
+    plan.src_acodec = play.acodec.clone();
+    plan.vcodec = play.vcodec;
+    plan.acodec = audio_declaration(&play.acodec);
+    let mode = env.direct_play_mode;
+    // The session's own playlist with no encoder behind it: the original route's identity, so a
+    // later failure of this playlist still has the channel's conversion to try.
+    let as_recorded = |plan: &mut Plan| {
+        plan.vcodec = "h264".into();
+        plan.acodec = "aac".into();
+        plan.src_vcodec = plan.vcodec.clone();
+        plan.src_acodec = plan.acodec.clone();
+        plan.tsession.clear();
+        plan.contract = plx_plex::plex::EncodeContract::default();
+        plan.url = client.direct_play_url(&play.part, &session).to_url();
+    };
+    if plan.source_decodable && mode != DirectPlayMode::Disabled {
+        plan.url = client.direct_play_url(&play.part, &session).to_url();
+        return;
+    }
+    if mode == DirectPlayMode::Forced {
+        if let Some(failure) = forced_live_failure(plan, video, audio) {
+            crate::player::log(&format!(
+                "playback_policy: Force Direct Play refused the live cut {}/{}", plan.src_vcodec, plan.src_acodec));
+            plan.verdict = Some(PlayVerdict::Forced(failure));
+        } else {
+            crate::player::log("livetv: Force Direct Play reads an undescribed playlist as recorded");
+            as_recorded(plan);
+        }
+        return;
+    }
+    plan.contract = plx_plex::plex::EncodeContract {
+        delivery: plx_plex::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
+        no_video_copy: !video,
+        ..Default::default()
+    };
+    let mut spec = transcode_spec_carrying_burn(&env.caps, "", 0, &session, &session,
+        plx_plex::plex::TranscodeOffset::Fresh, 0, 0, true, plan.contract);
+    spec.source = plx_plex::plex::TranscodeSource::Live(&live.key);
+    // The decision may register resources even on refusal; both owners must survive for cleanup
+    // (they are one id here, so the as-recorded read below keeps it as the playback session).
+    plan.tsession = session.clone();
+    let decision = client.transcode_decision(off, &spec);
+    let refused = decision.as_ref().map_or(Some(None), |d| refusal(d).map(Some));
+    if let Some(reason) = refused {
+        if unknown && mode != DirectPlayMode::Disabled {
+            // PMS 1.43.3 refused both decisions on the owner's TV (2026-10-21) while the
+            // session's own playlist played: every measured live session is H.264/AAC, so that
+            // stays the fallback once a conversion cannot be had.
+            crate::player::log("livetv: no conversion for an undescribed playlist; reading it as recorded");
+            as_recorded(plan);
+        } else if let (Some(reason), Some(decision)) = (reason, decision.as_ref()) {
+            plan.verdict = Some(PlayVerdict::Server(reason, DecisionCodes::of(decision)));
+        } else if mode == DirectPlayMode::Disabled && (unknown || plan.source_decodable) {
+            // The original is what would have played, and the setting forbids it; a cut the set
+            // cannot decode stays the plain failure it is under Auto. The plan keeps its ids so
+            // the refusal's cleanup still reaches whatever the decision registered.
+            plan.verdict = Some(PlayVerdict::DirectPlayDisabled);
+        }
+        return;
+    }
+    let Some(decision) = decision else { return };
+    let Some((video, audio)) = decision_codecs(&decision) else { return };
+    plan.vcodec = video;
+    plan.acodec = audio_declaration(&audio);
+    plan.url = client.transcode_start_url(&spec).to_url();
+}
+
+fn forced_live_failure(plan: &Plan, video_supported: bool, audio_supported: bool) -> Option<ForcedFailure> {
+    // Judge a half-described decision by the lane it named. The measured fallback video is H.264.
+    let video = if plan.src_vcodec.is_empty() { "h264" } else { plan.src_vcodec.as_str() };
+    if !plan.src_vcodec.is_empty() && !video_supported {
+        return Some(ForcedFailure::Video);
+    }
+    let audio = &plan.src_acodec;
+    (!audio.is_empty() && !(audio_supported
+        && plx_playback_contract::demux::hls_accepts_codecs(video, Some(audio))))
+        .then(|| ForcedFailure::Audio { codec: plx_data::metadata::friendly_codec(audio) })
 }
 
 /// The Load audio declaration as the pipeline names it.
@@ -3446,7 +3684,7 @@ impl AccountAudioLanguage {
 /// The account-language resolver diagnostic. This is pure so every emitted outcome stays
 /// host-testable; it intentionally contains only the language code, never account identity.
 fn account_audio_language_log(
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     account: &AccountAudioLanguage,
     tracks: &[plx_data::metadata::Stream],
     audio_sel: Option<&(i32, String, i64)>,
@@ -3610,7 +3848,7 @@ fn audio_intents<'a>(
 /// which it has never been; see the tests at the foot of this file.
 #[cfg(test)]
 pub(super) fn pick_dp_audio(
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     tracks: &[plx_data::metadata::Stream],
     default_acodec: &str,
 ) -> Option<(i32, String, i64)> {
@@ -3623,7 +3861,7 @@ pub(super) fn pick_dp_audio(
 /// series set to Hungarian opened in English (#160).
 #[cfg(test)]
 pub(super) fn pick_dp_audio_pref(
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     tracks: &[plx_data::metadata::Stream],
     default_acodec: &str,
     prefs: AudioLangPrefs<'_>,
@@ -3633,11 +3871,11 @@ pub(super) fn pick_dp_audio_pref(
 
 /// Can the TV take this audio track straight from the file, under `mode`, on the attempt's
 /// capability value `caps`: with its own decoder ([`audio_natively_plays_with`]) or with the app's
-/// lossy decode to stereo ([`plx_platform::devcaps::Caps::app_decodes_lossy_track`]: a codec in force,
+/// lossy decode to stereo ([`plx_os::devcaps::Caps::app_decodes_lossy_track`]: a codec in force,
 /// or, under Forced, one the set has no native path for and the policy admits, and then only for a
 /// track of at most two channels, because the app never mixes a surround source down under Force)? Auto and Forced both go
 /// through `devcaps`' canonicaliser (PMS's `dca` is the pipeline's `dts`), so they cannot drift apart.
-/// Both also apply the Load's own limits ([`plx_platform::devcaps::audio_track_fits`]): the PCM
+/// Both also apply the Load's own limits ([`plx_os::devcaps::audio_track_fits`]): the PCM
 /// path's channel count and rate rule (`pcm_load_rate`: a table rate, or any faster one the app
 /// resamples), the stated channel count an Opus `opusInfo` header can describe (1..=8,
 /// `devcaps::OPUS_LOAD_CHANNELS`; an unstated width is not direct-playable, #1096), and the sample-rate
@@ -3645,7 +3883,7 @@ pub(super) fn pick_dp_audio_pref(
 /// to the app's decoder and the Load, not to a hardware decoder Forced may trust past its table, so a 5.1
 /// FLAC, or a 96 kHz AAC, is refused under Forced instead of failing at the Load; a 96 kHz stereo FLAC is not.
 pub(super) fn audio_direct_plays_with(
-    caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
+    caps: &plx_os::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
     sample_rate: i64,
 ) -> bool {
     audio_natively_plays_with(caps, mode, codec, channels, sample_rate)
@@ -3656,7 +3894,7 @@ pub(super) fn audio_direct_plays_with(
 /// resort (Auto has one pass, over `audio_direct_plays_with`), so a native track that honours the
 /// intent is never passed over for one the app would decode.
 pub(super) fn audio_natively_plays_with(
-    caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
+    caps: &plx_os::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
     sample_rate: i64,
 ) -> bool {
     caps.native_audio_track(codec, channels, sample_rate, mode == DirectPlayMode::Forced)
@@ -3664,7 +3902,7 @@ pub(super) fn audio_natively_plays_with(
 
 #[cfg(test)]
 fn pick_dp_audio_mode(
-    caps: &plx_platform::devcaps::Caps, tracks: &[plx_data::metadata::Stream], default_acodec: &str,
+    caps: &plx_os::devcaps::Caps, tracks: &[plx_data::metadata::Stream], default_acodec: &str,
     prefs: AudioLangPrefs<'_>, mode: DirectPlayMode,
 ) -> Option<(i32, String, i64)> {
     pick_dp_audio_eligible(tracks, default_acodec, prefs, 0, StandIn::Any,
@@ -4120,7 +4358,8 @@ fn pick_dp_subtitle_account(
 /// Which rung of the subtitle ladder decided what is on screen ([`pick_subtitle`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SubPickSource {
-    /// Rung 1: this playback's own pick (a known retry).
+    /// Rung 1: this playback's own pick: a known retry's, or the Off the viewer chose before
+    /// playback (`PlayingItem::sub_choice`).
     Override,
     /// Rung 3: what the profile remembered for the show (a track, Off, or Forced only).
     Memory,
@@ -4149,7 +4388,9 @@ pub(super) struct SubDecision {
 /// otherwise falls through to the next. Never to Off, except a remembered Off and Forced only (the
 /// forced track or nothing): those two never fall through themselves, but they are memory like a
 /// remembered track, so rungs 1 and 2 outrank all three alike.
-///   1. this playback's own pick (`override_id`, a known retry);
+///   1. this playback's own pick: `override_id` (a known retry), or the Off the viewer chose before
+///      playback (`PlayingItem::sub_choice`), which outranks memory, the server's selection, the
+///      show's settings and the account's rule alike, and consults no memory;
 ///   2. a subtitle the SERVER has selected and the app draws itself
 ///      (`metadata::server_selected_sidecar`): memory is not consulted, and the server's pick stands;
 ///   3. what the profile remembered for the show: a track (`track_memory::match_subtitle`; a
@@ -4172,6 +4413,9 @@ pub(super) fn pick_subtitle(
             .position(|s| s.id == id && !s.external && embedded_subtitle_renderable(&s.codec))
             .and_then(|i| (id > 0).then_some((id, plx_data::metadata::sub_render_ordinal(subs, i))));
         return SubDecision { pick, source: SubPickSource::Override, miss: None };
+    }
+    if item.sub_choice == plx_data::metadata::SubPick::Off {
+        return SubDecision { pick: None, source: SubPickSource::Override, miss: None };
     }
     let mut miss = None;
     if let Some(memo) = consulted_memory(item, override_id, memory) {
@@ -4196,7 +4440,7 @@ pub(super) fn pick_subtitle(
 pub(super) fn video_feed_supported(
     vcodec: &str,
     dv: plx_data::metadata::DvPresentation,
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
 ) -> bool {
     (matches!(vcodec, "h264" | "hevc")
         || (vcodec == "av1" && caps.av1)
@@ -4219,7 +4463,7 @@ pub(super) fn direct_play_policy(mode: DirectPlayMode, policy: plx_plex::plex::L
 /// decoder, av1 / vp9 only when the table lists their own row (`Caps::av1`, `Caps::vp9`), and
 /// anything else the pipeline cannot feed at all. The resolution half is the local agreement with the profile's
 /// `video.width`/`video.height` limitations (the `*`-scoped one and the codec-scoped ones, both from
-/// [`plx_platform::devcaps::Caps::raster_bound`]): the profile makes PMS transcode a 4K source down for a
+/// [`plx_os::devcaps::Caps::raster_bound`]): the profile makes PMS transcode a 4K source down for a
 /// 1080p-bounded SoC, but when `/decision` is unreachable the fallback never asks PMS, so without
 /// this test a 4K file with one direct-playable audio track was fed verbatim to a decoder whose
 /// table says 1920x1088 — the wrong-side failure devcaps' own doc names (issue #22's over-claim
@@ -4273,7 +4517,7 @@ pub(super) fn video_direct_plays(
     src_w: i64,
     src_h: i64,
     dv: plx_data::metadata::DvPresentation,
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
 ) -> bool {
     let codec_ok = vcodec == "h264"
         || (vcodec == "hevc" && caps.hevc)
@@ -4281,7 +4525,7 @@ pub(super) fn video_direct_plays(
         || (vcodec == "vp9" && caps.vp9);
     // The codec's one raster bound: the shared bound, AV1's and VP9's own table rows on each axis
     // they state, and the attempt's ceiling for this codec after a recovery took a refused video
-    // out of it ([`plx_platform::devcaps::Caps::raster_bound`]).
+    // out of it ([`plx_os::devcaps::Caps::raster_bound`]).
     let (bw, bh) = caps.raster_bound(vcodec);
     codec_ok && src_w <= bw as i64 && src_h <= bh as i64 && dv.refusal().is_none()
 }
@@ -4293,12 +4537,82 @@ pub(super) fn automatic_version<'a>(
     version_play_starts(versions, env.direct_play_mode, &env.caps, env.dolby_vision_mode, env.dv_capability)
 }
 
+/// Source video facts for the file that the detail page's Play action would start.
+pub struct PlayedVideo<'a> {
+    /// A substituted version. Otherwise the primary part and its backfilled detail facts apply.
+    pub version: Option<&'a plx_data::pms::MediaVersion>,
+    pub resolution: &'a str,
+    pub width: i64,
+    pub height: i64,
+    pub vcodec: &'a str,
+    pub acodec: &'a str,
+    pub kbps: i64,
+    pub hdr: bool,
+    pub dovi: plx_data::metadata::Dovi,
+    pub dv: plx_data::metadata::DvDecision,
+    pub(super) primary_part: &'a str,
+    pub(super) ceiling_kbps: i64,
+}
+
+impl PlayedVideo<'_> {
+    /// Source range with the set's Dolby Vision presentation decision applied.
+    pub fn range(&self) -> plx_base::detail_parts::DynamicRange {
+        plx_base::detail_parts::DynamicRange::carried(self.hdr, self.dv.presentation.declared().is_some())
+    }
+}
+
+pub fn played_video<'a>(
+    d: &'a plx_data::metadata::Detail,
+    mode: DirectPlayMode,
+    caps: &plx_os::devcaps::Caps,
+    dv_mode: plx_plex::plex::session::DolbyVisionMode,
+    dv_probed: plx_os::devcaps::dv::DvCapability,
+    chosen: Option<plx_plex::plex::MediaId>,
+) -> Option<PlayedVideo<'a>> {
+    // A show's primary stream metadata is backfilled on Detail. Its part and codecs live on
+    // the episode, so the show container itself retains its identity as a non-playable item.
+    // The part is the file the page's streams describe (`Detail::streams_part`): empty when the show's
+    // play episode has no file or is not the one whose streams were backfilled.
+    let primary_part = d.streams_part();
+    if primary_part.is_empty() {
+        return None;
+    }
+    let (vcodec, acodec, versions) = if d.has_own_file() {
+        (&d.vcodec, &d.acodec, &d.versions)
+    } else {
+        let ep = d.play_episode()?;
+        (&ep.vcodec, &ep.acodec, &ep.versions)
+    };
+    // A version the viewer chose is the file Play takes in EVERY direct-play mode, ahead of the
+    // automatic substitute. The first of the list is the primary part's own facts, so choosing it is
+    // the `None` shape below, as with no choice and no substitute. A choice whose media is gone
+    // from `versions` is no choice at all.
+    let version = match chosen.and_then(|id| versions.iter().position(|v| v.id == id)) {
+        Some(0) => None,
+        Some(at) => versions.get(at),
+        None => version_play_starts(versions, mode, caps, dv_mode, dv_probed),
+    };
+    Some(match version {
+        Some(v) => PlayedVideo {
+            version, primary_part, resolution: &v.resolution, width: v.width, height: v.height,
+            vcodec: &v.vcodec, acodec: &v.acodec, kbps: v.kbps,
+            ceiling_kbps: ceiling_kbps(v.video_kbps, v.kbps), hdr: v.hdr, dovi: v.dovi,
+            dv: frozen_dv_decision(dv_mode, dv_probed, v.dovi, &v.vcodec),
+        },
+        None => PlayedVideo {
+            version, primary_part, resolution: &d.video_resolution, width: d.width, height: d.height,
+            vcodec, acodec, kbps: d.bitrate, ceiling_kbps: source_kbps(d), hdr: d.hdr, dovi: d.dovi,
+            dv: frozen_dv_decision(dv_mode, dv_probed, d.dovi, vcodec),
+        },
+    })
+}
+
 pub fn version_play_starts<'a>(
     versions: &'a [plx_data::pms::MediaVersion],
     mode: DirectPlayMode,
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     dv_mode: plx_plex::plex::session::DolbyVisionMode,
-    dv_probed: plx_platform::devcaps::dv::DvCapability,
+    dv_probed: plx_os::devcaps::dv::DvCapability,
 ) -> Option<&'a plx_data::pms::MediaVersion> {
     match mode {
         DirectPlayMode::Forced => None,
@@ -4308,9 +4622,9 @@ pub fn version_play_starts<'a>(
 
 pub(super) fn decodable_version<'a>(
     versions: &'a [plx_data::pms::MediaVersion],
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     dv_mode: plx_plex::plex::session::DolbyVisionMode,
-    dv_probed: plx_platform::devcaps::dv::DvCapability,
+    dv_probed: plx_os::devcaps::dv::DvCapability,
 ) -> Option<&'a plx_data::pms::MediaVersion> {
     let direct = |v: &plx_data::pms::MediaVersion| {
         video_direct_plays(
@@ -4421,13 +4735,16 @@ pub struct AudioPreviewInputs<'a> {
     pub local_link: bool,
     /// `Media[0].bitrate`, kbps.
     pub part_kbps: i64,
+    /// The session audio pick, the viewer's pre-play audio ([`ResolveEnv::under_pick`]'s twin): `0`
+    /// for none. The plan ranks it first, so the preview does too.
+    pub session_audio: i64,
 }
 
 impl AudioPreviewInputs<'_> {
     /// No subtitle, no default codec: the pick over the tracks alone.
     pub const NONE: AudioPreviewInputs<'static> = AudioPreviewInputs {
         default_acodec: "", sub_selected: false, quality: Quality::Original,
-        dv_declared: false, local_link: false, part_kbps: 0,
+        dv_declared: false, local_link: false, part_kbps: 0, session_audio: 0,
     };
 }
 
@@ -4444,7 +4761,7 @@ impl AudioPreviewInputs<'_> {
 /// a subtitle that only a show or account preference would turn on (only a subtitle already
 /// selected on the item counts as due). Unknown tracks answer `false`.
 pub(super) fn audio_intent_needs_conversion(
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     tracks: &[plx_data::metadata::Stream], part: &str, video_dp: bool, inputs: AudioPreviewInputs<'_>,
 ) -> bool {
     if tracks.is_empty() {
@@ -4452,7 +4769,7 @@ pub(super) fn audio_intent_needs_conversion(
     }
     let eligible = |codec: &str, channels: i64, rate: i64| plx_plex::plex::is_dp_audio_track_with(caps, codec, channels, rate);
     let pick = |stand_in| pick_dp_audio_eligible(
-        tracks, inputs.default_acodec, AudioLangPrefs::default(), 0, stand_in, eligible,
+        tracks, inputs.default_acodec, AudioLangPrefs::default(), inputs.session_audio, stand_in, eligible,
     );
     if pick(StandIn::SameKind).is_some() {
         return false;
@@ -4471,7 +4788,7 @@ pub(super) fn audio_intent_needs_conversion(
 /// [`playback_preview`]'s pure core — the four-way answer from the fields it actually needs, so
 /// a caller holding an EPISODE's file and a show's stream list can ask the same question.
 pub fn playback_preview_of(
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     part: &str,
     vcodec: &str,
     width: i64,
@@ -4484,7 +4801,7 @@ pub fn playback_preview_of(
 
 /// [`playback_preview_of`] with what the page knows about the audio pick ([`AudioPreviewInputs`]).
 pub fn playback_preview_with_audio(
-    caps: &plx_platform::devcaps::Caps,
+    caps: &plx_os::devcaps::Caps,
     part: &str,
     vcodec: &str,
     width: i64,
@@ -4521,22 +4838,20 @@ pub fn playback_preview_with_audio(
 /// extension in the part-key filename; the m4v spelling is the same mov demuxer and the same
 /// `container=mp4` in PMS metadata.
 pub(super) fn part_is_streamable(part_key: &str) -> bool {
-    let name = part_key.rsplit('/').next().unwrap_or(part_key);
-    let name = name.split('?').next().unwrap_or(name);
+    let name = part_file_name(part_key);
     name.ends_with(".mkv") || name.ends_with(".mp4") || name.ends_with(".m4v")
 }
 
-
-/// Extract the numeric Part id from a Plex part key (/library/parts/{id}/…/file.mkv).
-pub(super) fn part_id_of(part_key: &str) -> i64 {
-    let mut it = part_key.split('/');
-    while let Some(seg) = it.next() {
-        if seg == "parts" {
-            return it.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
-        }
-    }
-    0
+/// The file name a Part key ends in, without its query.
+fn part_file_name(part_key: &str) -> &str {
+    let name = part_key.rsplit('/').next().unwrap_or(part_key);
+    name.split('?').next().unwrap_or(name)
 }
+
+
+/// The numeric Part id of a Plex part key (/library/parts/{id}/…/file.mkv), read by the one rule
+/// the pre-play pick's file key shares (`plx_plex::plex::part_id_of`).
+pub(super) use plx_plex::plex::part_id_of;
 
 // ---- async resolve: worker computes an owned Plan, main thread installs it ------------------
 // The house idiom (metadata::load_season / browse.rs): generation counter + single-flight +
@@ -4551,6 +4866,9 @@ pub(super) fn part_id_of(part_key: &str) -> i64 {
 pub(super) struct AbandonedPlanResources {
     pub(super) sid: ServerId,
     pub(super) identities: Vec<String>,
+    /// A tuned Live TV session (and the playback session it was decided under) whose recording
+    /// must be stopped before anything else: it holds one of the server's tuners.
+    pub(super) live: Option<(plx_plex::plex::livetv::LiveSession, String)>,
 }
 
 pub(super) fn abandoned_plan_resources(plan: &Plan) -> Option<AbandonedPlanResources> {
@@ -4561,12 +4879,14 @@ pub(super) fn abandoned_plan_resources(plan: &Plan) -> Option<AbandonedPlanResou
     if !plan.sess.is_empty() && !identities.iter().any(|id| id == &plan.sess) {
         identities.push(plan.sess.clone());
     }
-    if identities.is_empty() {
+    let live = plan.live.clone().map(|live| (live, plan.sess.clone()));
+    if identities.is_empty() && live.is_none() {
         None
     } else {
         Some(AbandonedPlanResources {
             sid: plan.sid,
             identities,
+            live,
         })
     }
 }

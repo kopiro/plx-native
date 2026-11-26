@@ -33,7 +33,14 @@ impl ScreenArg for TestArg {
 pub(super) struct TestHost;
 
 impl crate::registry::ScreenInputsLike for TestHost {
-    fn screen_inputs<'a>(cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { cx.views }
+    fn screen_inputs<'a>(cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        if NO_DRIVER.with(|flag| flag.get()) { crate::registry::no_driver_fixture() } else { cx.views }
+    }
+}
+
+thread_local! {
+    /// TEST ONLY: the host publishes a platform that composed no playback driver.
+    static NO_DRIVER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 impl crate::registry::PlayerLike for TestHost {
@@ -87,7 +94,7 @@ impl crate::registry::MetadataLike for TestHost {
 
 fn cx<'a>(measure: &'a dyn plx_machine::machine::Measure, elem: Option<u32>) -> Cx<'a, TestHost> {
     Cx {
-        views: crate::registry::empty_fixture(),
+        views: crate::registry::caption_fixture(),
         tick: Default::default(),
         measure,
         press: PressRead::default(),
@@ -174,6 +181,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         refresh: DetailRefreshPhase::None,
         refresh_gen: 0,
         restore_intent: None,
+        provisional: false,
         teardown_cleared: false,
         withdrawn: false,
         scroll: Spring::at(0.0),
@@ -255,6 +263,34 @@ fn install(d: Detail) -> plx_base::testlock::Serial {
     guard
 }
 
+/// **A detail page, covered, notices that Settings changed what its poster shelves draw under the
+/// posters** (`step`'s head): a page returning from under a cover raises no damage of its own, and
+/// typed page damage is what retakes a frozen host's snapshot.
+#[test]
+fn the_detail_damages_the_page_when_the_under_posters_setting_moved_under_a_cover() {
+    use crate::registry::captions::{PolicyPin, FIXTURE_TITLE_ON};
+    use plx_plex::plex::session::UnderPosters;
+    let _guard = install(Detail { sid: ServerId::UNSET, rk: "page".into(), ..Default::default() });
+    let mut screen = bare_held(ServerId::UNSET, "page");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let mut uncover_under = |setting: UnderPosters| {
+        let _pin = PolicyPin::set(setting);
+        screen.sync_keys(test_store().view());
+        let mut effects = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        {
+            let mut sink = Effects::new(&mut effects,
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)), &mut present);
+            Machine::<TestHost>::step(&mut screen, &ScreenEvent::Uncover, &cx(&measure, None), &mut sink);
+        }
+        present.page_damaged()
+    };
+    assert!(!uncover_under(UnderPosters::DEFAULT), "control: an unchanged setting damages nothing");
+    assert!(uncover_under(FIXTURE_TITLE_ON), "the Title switch moved the caption policy");
+    assert!(!uncover_under(FIXTURE_TITLE_ON), "...once");
+    clear();
+}
+
 fn clear() {
     plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
     // The *Also available* store outlives a page, so a test that seeded it hands the next one an
@@ -272,7 +308,7 @@ fn step(
     event: &ScreenEvent<TestHost>,
     focus: Option<u32>,
 ) -> (Handled, Vec<plx_machine::machine::Stamped<TestHost>>) {
-    step_with_inputs(screen, event, focus, crate::registry::empty_fixture())
+    step_with_inputs(screen, event, focus, crate::registry::caption_fixture())
 }
 
 fn step_with_inputs(
@@ -1383,10 +1419,12 @@ fn hero_focus_follows_its_control_when_the_set_grows_under_it() {
 
 #[test]
 fn hero_focus_stays_in_place_when_also_available_lands() {
-    let before = hero::HeroSet { more: false,
+    let before = hero::HeroSet {
+        delete_menu: false,
         watchlist: true,
         go_show: false,
         version: false,
+        tracks: false,
         restart: true,
         trailer: false,
         alt: false,
@@ -1552,19 +1590,21 @@ fn a_landed_view_state_refresh_puts_the_browsed_season_back_and_never_steers_ano
 #[test]
 fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
     let y = 812.0;
-    let set = hero::HeroSet { more: false,
+    let set = hero::HeroSet {
+        delete_menu: false,
         watchlist: true,
         go_show: false,
         version: false,
+        tracks: false,
         restart: true,
         trailer: false,
         alt: false,
         mark: PosterMark::InProgress,
     };
     let index = hero::watch_index(set).unwrap();
-    assert_eq!(hero::ctl_at(set, index - 1), Some(hero::HeroCtl::Restart));
+    assert_eq!(hero::ctl_at(set, index - 1), Some(hero::HeroCtl::Watchlist));
     for unfurl in [0.2, 0.6, 1.0] {
-        let disc = hero::disc_caps_at(set, 230.0, 0.0, [0.0, 0.0, unfurl, 0.0, 0.0], [201.0, 0.0, 267.0, 0.0, 0.0]);
+        let disc = hero::disc_caps_at(set, 230.0, 0.0, [0.0, 0.0, unfurl, 0.0, 0.0, 0.0], [201.0, 0.0, 267.0, 0.0, 0.0, 0.0]);
         let widths = hero::HeroWidths {
             pill: 230.0,
             alt: 0.0,
@@ -1636,12 +1676,12 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                     assert_eq!(n, 3 + usize::from(restart) + usize::from(alt));
                     sizes.insert(n);
                     for unfurl in [
-                        [0.0, 0.0, 0.0, 0.0, 0.0],
-                        [0.0, 0.0, 1.0, 0.0, 0.0],
-                        [0.0, 1.0, 0.0, 0.0, 0.0],
-                        [0.3, 0.0, 0.7, 0.0, 0.0],
-                        [1.0, 0.0, 0.0, 0.0, 0.0],
-                        [0.0, 1.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+                        [0.3, 0.0, 0.7, 0.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 1.0, 0.0, 0.0, 0.0],
                     ] {
                         screen.disc_unfurl = unfurl.map(Spring::at);
                         for scroll in [0.0, 48.0] {
@@ -2901,7 +2941,7 @@ fn a_show_trailer_disc_plays_the_extra_not_the_on_deck_episode() {
             assert_ne!(part.as_str(), "/library/parts/trailer");
             assert_ne!(context.as_str(), plx_data::metadata::TRAILER_CONTEXT);
         }
-        (PlayIntent::Movie { .. }, _) => {}
+        (PlayIntent::Movie { .. } | PlayIntent::Live { .. }, _) => {}
     }
     clear();
 }
@@ -3339,7 +3379,7 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
     spot.section = 6;
     spot.col = 1;
     screen.restore(&spot, test_store().view());
-    let key = screen.restore_focus(test_store().view()).expect("extras column restores");
+    let key = screen.restore_focus(&cx(&plx_ui::fixture::FixtureMeasure, None)).expect("extras column restores");
     assert!(matches!(screen.locate(key, test_store().view()), Some(Located::Extras(1))));
 
     let movie = Detail {
@@ -4724,10 +4764,10 @@ fn a_restore_onto_episode_700_waits_for_its_page_and_then_seats_it() {
         seek: Default::default(),
     });
     screen.sync_keys(test_store().view());
-    assert_eq!(screen.restore_focus(test_store().view()), None, "episode 700's page has not landed");
+    assert_eq!(screen.restore_focus(&cx(&plx_ui::fixture::FixtureMeasure, None)), None, "episode 700's page has not landed");
     land_page(1000, 11);
     screen.sync_keys(test_store().view());
-    assert_eq!(screen.restore_focus(test_store().view()), episode_key(&screen, 700, episodes::Row::Still));
+    assert_eq!(screen.restore_focus(&cx(&plx_ui::fixture::FixtureMeasure, None)), episode_key(&screen, 700, episodes::Row::Still));
     clear();
 }
 
@@ -5157,7 +5197,7 @@ fn a_non_plex_guid_has_no_bookmark_disc() {
     let set = screen.hero_set(test_store().view());
     assert!(!set.watchlist);
     assert!(!hero::hero_ctls(set).0[..hero::hero_ctls(set).1].contains(&hero::HeroCtl::Watchlist));
-    assert!(!hero::visible_ctls(set, false).0[..hero::visible_ctls(set, false).1].contains(&hero::HeroCtl::Watchlist));
+    assert!(!hero::visible_ctls(set, hero::Stops::trailer(false)).0[..hero::visible_ctls(set, hero::Stops::trailer(false)).1].contains(&hero::HeroCtl::Watchlist));
     assert_eq!(hero::index_of(set, hero::HeroCtl::Watchlist), None);
     let (_, fx) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_WATCHLIST), Some(hero::ELEM_WATCHLIST));
     assert!(item_menu_acts(&fx).is_empty());
@@ -5332,6 +5372,7 @@ fn identity_detail(parts_empty: bool) -> Detail {
     use plx_data::metadata::Stream;
     let mut d = Detail {
         kind: if parts_empty { "episode".into() } else { "movie".into() },
+        part: "/library/parts/1/1/video.mkv".into(),
         video_resolution: "1080".into(),
         subs: vec![Stream { sdh: true, ..Default::default() }],
         ..Default::default()
@@ -5353,19 +5394,39 @@ fn the_identity_line_paints_sm_after_the_run_and_xs_between_chips() {
     let d = identity_detail(false);
     let m = &plx_base::fontcov::advances::ShippedMeasure;
     let runs = plx_ui::draw_census::capture_runs(|| screen.identity_row(plx_ui::Painter::recording(), &d, 300.0, m));
-    let kind = plx_platform::i18n::msg::browse_kind_movie();
+    let kind = plx_os::i18n::msg::browse_kind_movie();
     let kind_run = runs.iter().find(|r| r.text == kind).expect("the kind label is painted");
     // The recording painter has no loaded font. Geometry comes from the same injected measure
     // as the run, rather than the painter's uninitialized-font width estimate.
     let run_right = kind_run.at.x + plx_machine::machine::Measure::width_str(m, kind, theme::hero::IDENTITY_SIZE, false);
     let res = keyline_left(painted_x(&runs, "1080p").expect("resolution chip"), "1080p", m);
-    let cc_label = plx_platform::i18n::msg::widgets_badge_cc();
-    let sdh_label = plx_platform::i18n::msg::widgets_badge_sdh();
+    let cc_label = plx_os::i18n::msg::widgets_badge_cc();
+    let sdh_label = plx_os::i18n::msg::widgets_badge_sdh();
     let cc = keyline_left(painted_x(&runs, cc_label).expect("CC chip"), cc_label, m);
     let sdh = keyline_left(painted_x(&runs, sdh_label).expect("SDH chip"), sdh_label, m);
     assert!((res.0 - run_right - theme::space::SM).abs() < 0.5, "SM after the dotted run: {} vs {run_right}", res.0);
     assert!((cc.0 - res.1 - theme::space::XS).abs() < 0.5, "XS between the badge and the first chip");
     assert!((sdh.0 - cc.1 - theme::space::XS).abs() < 0.5, "XS between the chips");
+}
+
+/// **The dynamic range stands right after the resolution**: "Dolby Vision" for a file that carries
+/// it, "HDR" for any other HDR video, nothing for SDR.
+#[test]
+fn the_identity_line_names_the_dynamic_range_after_the_resolution() {
+    let _guard = plx_base::testlock::serial();
+    let screen = bare_held(ServerId::UNSET, "rk");
+    let m = &plx_base::fontcov::advances::ShippedMeasure;
+    let row = |d: &Detail| plx_ui::draw_census::capture_runs(|| screen.identity_row(plx_ui::Painter::recording(), d, 300.0, m));
+    let mut d = identity_detail(false);
+    assert!(painted_x(&row(&d), "HDR").is_none() && painted_x(&row(&d), "Dolby Vision").is_none(), "SDR names no range");
+    d.hdr = true;
+    let runs = row(&d);
+    let x = |label: &str| painted_x(&runs, label).unwrap_or_else(|| panic!("the {label} chip"));
+    assert!(x("1080p") < x("HDR") && x("HDR") < x(plx_os::i18n::msg::widgets_badge_cc()), "between the resolution and the accessibility chips");
+    d.dovi.present = true;
+    let runs = row(&d);
+    assert!(painted_x(&runs, "HDR").is_some() && painted_x(&runs, "Dolby Vision").is_none(),
+        "the chip names what this set presents: no Dolby Vision probe, so a Dolby Vision file reads HDR (route::played_video's tests cover a supported set)");
 }
 
 /// **An empty dotted run owes no gap**: the first chip stands on the margin itself.
@@ -5657,7 +5718,8 @@ fn versioned(kind: &str, versions: usize) -> Detail {
         rk: "leaf".into(),
         kind: kind.into(),
         title: "Leaf".into(),
-        part: "/library/parts/leaf".into(),
+        // a numeric part id, as a real PMS key has: the picker and the pick refuse a part that names no file
+        part: "/library/parts/1/leaf.mkv".into(),
         resume_ms: 600_000,
         dur_ms: 6_000_000,
         versions: plx_appkit::version_list::sample().into_iter().take(versions).collect(),
@@ -5665,37 +5727,43 @@ fn versioned(kind: &str, versions: usize) -> Detail {
     }
 }
 
-/// A version the panel reports plays THAT version of the page's item, resuming as Play does, on a
-/// movie page and an episode page alike.
+/// The version for a SELECT-reporting `effects`, if the page asked the app to remember one.
+fn selected_version(effects: &[plx_machine::machine::Stamped<TestHost>]) -> Option<(ServerId, String, plx_plex::plex::MediaId)> {
+    effects.iter().find_map(|effect| match &effect.fx {
+        Fx::App(AppFx::Content(ContentReq::SelectVersion { sid, rk, media })) => Some((*sid, rk.clone(), *media)),
+        _ => None,
+    })
+}
+
+/// A version the panel reports is SELECTED for the page's item and plays nothing, on a movie page
+/// and an episode page alike; Play then asks for the page's item as before (the app settles which
+/// file: `route::settle_version`).
 #[test]
-fn a_picked_version_plays_it_resuming_like_play() {
+fn a_picked_version_is_selected_and_plays_nothing() {
     for kind in ["movie", "episode"] {
         let _guard = install(versioned(kind, 2));
         let mut screen = bare(&_guard, ServerId::UNSET, "leaf");
         let pick = plx_appkit::version_list::sample()[1].id;
-        let (_, effects) = step(&mut screen, &ScreenEvent::App(AppMsg::PlayVersion(pick)), None);
-        let (play, resume_ns) = play_item(&effects).expect("a pick plays");
-        match play {
-            PlayIntent::Item { rk, version, .. } => {
-                assert_eq!(rk, "leaf", "{kind}");
-                assert_eq!(*version, Some(pick), "{kind}");
-            }
-            PlayIntent::Movie { .. } => panic!("{kind}: the loaded item, not a hub row"),
-        }
-        assert_eq!(resume_ns, plx_data::metadata::resume_ns(600_000, 6_000_000), "{kind} resumes");
+        let (_, effects) = step(&mut screen, &ScreenEvent::App(AppMsg::SelectVersion(pick)), None);
+        assert!(play_item(&effects).is_none(), "{kind}: a pick plays nothing");
+        let (_, rk, media) = selected_version(&effects).expect("a pick is reported to the app");
+        assert_eq!((rk.as_str(), media), ("leaf", pick), "{kind}: the page's item, that version");
+        // A version the item does not have is not reported.
+        let (_, effects) = step(&mut screen, &ScreenEvent::App(AppMsg::SelectVersion(plx_plex::plex::MediaId(99))), None);
+        assert!(selected_version(&effects).is_none(), "{kind}: a version the item lacks selects nothing");
         let (_, effects) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_PLAY), Some(hero::ELEM_PLAY));
         assert!(
-            matches!(play_item(&effects), Some((PlayIntent::Item { version: None, .. }, _))),
-            "{kind}: the Play pill still plays the default version"
+            matches!(play_item(&effects), Some((PlayIntent::Item { rk, version: None, .. }, _)) if rk == "leaf"),
+            "{kind}: the Play pill asks for the item and leaves the choice to the app"
         );
         clear();
     }
 }
 
 /// On a show page the disc offers the versions of the episode the hero's Play plays (the on-deck
-/// one once the show is started), and a pick plays THAT episode in that version.
+/// one once the show is started), and a pick is selected for THAT episode, never for the show.
 #[test]
-fn a_show_page_offers_and_plays_its_hero_episodes_versions() {
+fn a_show_page_offers_and_selects_its_hero_episodes_versions() {
     let two = || plx_appkit::version_list::sample().into_iter().take(2).collect::<Vec<_>>();
     let on_deck = plx_data::metadata::Episode { resume_ms: 30_000, versions: two(), ..episode("e2", 2) };
     let mut d = detail(ServerId::UNSET, "show");
@@ -5705,14 +5773,10 @@ fn a_show_page_offers_and_plays_its_hero_episodes_versions() {
     let mut screen = bare(&_guard, ServerId::UNSET, "show");
     assert!(screen.hero_set(test_store().view()).version, "the on-deck episode has two versions");
     let pick = plx_appkit::version_list::sample()[1].id;
-    let (_, effects) = step(&mut screen, &ScreenEvent::App(AppMsg::PlayVersion(pick)), None);
-    match play_item(&effects).map(|(play, _)| play) {
-        Some(PlayIntent::Item { rk, version, .. }) => {
-            assert_eq!(rk, "e2", "the hero's episode");
-            assert_eq!(*version, Some(pick));
-        }
-        _ => panic!("a pick plays the hero's episode"),
-    }
+    let (_, effects) = step(&mut screen, &ScreenEvent::App(AppMsg::SelectVersion(pick)), None);
+    assert!(play_item(&effects).is_none(), "a pick plays nothing");
+    let (_, rk, media) = selected_version(&effects).expect("a pick is reported");
+    assert_eq!((rk.as_str(), media), ("e2", pick), "the hero's episode, not the show");
     clear();
     drop(_guard);
 
@@ -5721,6 +5785,117 @@ fn a_show_page_offers_and_plays_its_hero_episodes_versions() {
     let screen = bare(&_guard, ServerId::UNSET, "show");
     assert!(!screen.hero_set(test_store().view()).version);
     clear();
+}
+
+fn stream(id: i64, selected: bool) -> plx_data::metadata::Stream {
+    plx_data::metadata::Stream { id, selected, ..Default::default() }
+}
+
+/// The Audio & Subtitles disc exists where the loaded page has tracks to show (a movie, an
+/// episode's own page, a started show's on-deck episode) and not where it has none, and OK sends the
+/// panel request anchored on the disc, as the Select Version disc does.
+#[test]
+fn the_audio_and_subtitles_disc_follows_the_pages_tracks_and_opens_the_picker() {
+    let with_tracks = || Detail { audio: vec![stream(1, true), stream(2, false)], subs: vec![stream(3, false)], ..versioned("movie", 1) };
+    let _guard = install(with_tracks());
+    let mut screen = bare(&_guard, ServerId::UNSET, "leaf");
+    let set = screen.hero_set(test_store().view());
+    assert!(set.tracks);
+    let (row, n) = hero::hero_ctls(set);
+    assert!(row[..n].contains(&hero::HeroCtl::AudioSubtitles), "three actions are all round buttons");
+    let (_, effects) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_AUDIO_SUBTITLES), Some(hero::ELEM_AUDIO_SUBTITLES));
+    assert!(
+        effects.iter().any(|e| matches!(&e.fx, Fx::App(AppFx::Content(ContentReq::Panel(ContentPanel::PreplayTracks { .. }))))),
+        "OK on the disc opens the picker"
+    );
+    clear();
+    drop(_guard);
+
+    let _guard = install(Detail { audio: Vec::new(), ..with_tracks() });
+    let screen = bare(&_guard, ServerId::UNSET, "leaf");
+    assert!(!screen.hero_set(test_store().view()).tracks, "no streams, no disc");
+    clear();
+    drop(_guard);
+
+    // A show page with an on-deck episode offers THAT episode's tracks (the page's backfilled streams).
+    let on_deck = plx_data::metadata::Episode { resume_ms: 30_000, part: "/library/parts/2/e2.mkv".into(), ..episode("e2", 2) };
+    let mut d = detail(ServerId::UNSET, "show");
+    d.episodes = vec![episode("e1", 1), on_deck.clone()].into();
+    d.on_deck = Some(on_deck);
+    d.audio = vec![stream(1, true)];
+    d.episode_streams = plx_data::metadata::EpisodeStreams::Loaded("e2".into());
+    let _guard = install(d);
+    let screen = bare(&_guard, ServerId::UNSET, "show");
+    assert!(screen.hero_set(test_store().view()).tracks, "a started show offers its on-deck episode's tracks");
+    clear();
+}
+
+/// **The picker follows the file Play starts** (`taken_version`, the Select Version check mark's rule),
+/// not only the viewer's explicit choice: a two-version item whose first file the set cannot decode
+/// plays the second with no choice made, and the disc shows and the panel's rows and PUT part are
+/// that file's.
+#[test]
+fn the_picker_follows_the_file_play_starts_when_no_version_was_chosen() {
+    use plx_data::metadata::VersionPart;
+    let version = |id: i64, resolution: &str, width: i64, height: i64, vcodec: &str| plx_data::pms::MediaVersion {
+        id: plx_plex::plex::MediaId(id),
+        resolution: resolution.into(),
+        width,
+        height,
+        vcodec: vcodec.into(),
+        ..Default::default()
+    };
+    let d = Detail {
+        kind: "movie".into(),
+        part: "/library/parts/1/1/uhd.mkv".into(),
+        vcodec: "vp9".into(),
+        video_resolution: "4k".into(),
+        versions: vec![version(1, "4k", 3840, 2160, "vp9"), version(2, "1080", 1920, 1080, "h264")],
+        version_parts: vec![VersionPart {
+            id: plx_plex::plex::MediaId(2),
+            part: "/library/parts/2/1/hd.mkv".into(),
+            audio: vec![stream(7, true)],
+            subs: Vec::new(),
+        }],
+        audio: vec![stream(1, true)],
+        ..versioned("movie", 0)
+    };
+    assert_eq!(taken_version(&d), Some(plx_plex::plex::MediaId(2)), "control: Play starts the second file");
+    let _guard = install(d);
+    let screen = bare(&_guard, ServerId::UNSET, "leaf");
+    assert!(screen.hero_set(test_store().view()).tracks);
+    let arg = crate::registry::PreplayArg {
+        host: plx_machine::machine::InstanceId(1),
+        sid: ServerId::UNSET,
+        rk: "leaf".into(),
+        anchor: [0; 4],
+        source: crate::registry::PreplaySource::Page,
+    };
+    let tracks = crate::registry::preplay_tracks_of(test_store().view(), &arg);
+    assert_eq!(tracks.part, "/library/parts/2/1/hd.mkv", "the PUT addresses the file Play starts");
+    assert_eq!(tracks.audio.iter().map(|s| s.id).collect::<Vec<_>>(), [7]);
+    clear();
+}
+
+/// **A control the page no longer has is not performed**: the … menu was built from the page as it
+/// stood, and a row handed back after a read took the control away (no tracks now) opens nothing, while
+/// the same row on a page that still has it opens the picker on the menu's anchor.
+#[test]
+fn a_hero_control_handed_back_after_it_left_the_page_does_nothing() {
+    let anchor = [10.0f32, 20.0, 64.0, 64.0].map(f32::to_bits);
+    let handed_back = |d: Detail| {
+        let _guard = install(d);
+        let mut screen = bare(&_guard, ServerId::UNSET, "leaf");
+        let (_, effects) = step(&mut screen, &ScreenEvent::App(AppMsg::HeroCtl { ctl: hero::HeroCtl::AudioSubtitles, anchor }), None);
+        clear();
+        effects.iter().any(|e| matches!(
+            &e.fx,
+            Fx::App(AppFx::Content(ContentReq::Panel(ContentPanel::PreplayTracks { anchor: got }))) if *got == anchor
+        ))
+    };
+    let with_tracks = Detail { audio: vec![stream(1, true), stream(2, false)], subs: vec![stream(3, false)], ..versioned("movie", 1) };
+    assert!(handed_back(with_tracks.clone()), "control: the page still has the disc");
+    assert!(!handed_back(Detail { audio: Vec::new(), ..with_tracks }), "the page has no tracks now: nothing opens");
 }
 
 #[test]
@@ -5741,6 +5916,171 @@ fn pdf_proposal_on_deck_watched_action_targets_one_episode() {
     assert!(matches!(target.1, plx_data::viewstate::Scope::Leaf));
     clear();
     plx_plex::plex::reset_servers_for_test();
+}
+
+/// The hero row's elements as `(id, subject)`, in the row's order.
+fn hero_subjects(screen: &DetailScreen) -> Vec<(String, Option<String>)> {
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let context = cx(&measure, None);
+    let mut keys = Vec::new();
+    Focusable::<TestHost>::a11y_elems(screen, hero::HERO_GROUP, &context, &mut keys);
+    keys.iter()
+        .map(|key| {
+            let a = Focusable::<TestHost>::a11y(screen, key, &context).expect("a hero control projects");
+            (a.path.to_string(), a.subject.map(|rk| rk.into_owned()))
+        })
+        .collect()
+}
+
+fn named<'a>(row: &'a [(String, Option<String>)], id: &str) -> Option<&'a str> {
+    row.iter().find(|(path, _)| path == id).and_then(|(_, subject)| subject.as_deref())
+}
+
+/// **Every hero control that plays a title or writes to one names the title it acts on**, so the harness
+/// can make a press say which title it means. On a show that has been STARTED that is the on-deck
+/// episode, not the page's key: Play and Restart play it, the watched toggle writes it, and only the
+/// bookmark acts on the page's own item. The controls that open a menu or a panel carry none. With two
+/// versions the show has four actions, so Restart and Version are rows of …, not hero controls.
+#[test]
+fn a_started_shows_hero_controls_name_the_on_deck_episode_they_act_on() {
+    let two = || plx_appkit::version_list::sample().into_iter().take(2).collect::<Vec<_>>();
+    let on_deck = plx_data::metadata::Episode { resume_ms: 30_000, versions: two(), ..episode("e2", 2) };
+    let mut d = detail(ServerId::UNSET, "show");
+    d.guid = "plex://show/5d77680135a8fc45188ba331".into();
+    d.episodes = vec![episode("e1", 1), on_deck.clone()].into();
+    d.on_deck = Some(on_deck);
+    let _guard = install(d);
+    let screen = bare(&_guard, ServerId::UNSET, "show");
+    let row = hero_subjects(&screen);
+    let owned = |id: &str, rk: Option<&str>| (id.to_string(), rk.map(str::to_string));
+    assert_eq!(
+        row,
+        vec![
+            owned("hero.play", Some("e2")),
+            owned("hero.watchlist", Some("show")),
+            owned("hero.mark_watched", Some("e2")),
+            // Play from Start and Play Version are four actions in, so they live under … (VER-8)
+            owned("hero.more", None),
+        ]
+    );
+    clear();
+}
+
+/// A show nobody has started: Play plays the season's first episode, and the toggle writes the WHOLE show
+/// (the page's own key), because no episode is the hero's subject yet.
+#[test]
+fn an_unstarted_shows_play_names_its_first_episode_and_its_toggle_the_show() {
+    let mut d = detail(ServerId::UNSET, "show");
+    d.guid = "plex://show/5d77680135a8fc45188ba331".into();
+    let _guard = install(d);
+    let screen = bare(&_guard, ServerId::UNSET, "show");
+    let row = hero_subjects(&screen);
+    assert_eq!(named(&row, "hero.play"), Some("e1"));
+    assert_eq!(named(&row, "hero.mark_watched"), Some("show"));
+    assert_eq!(named(&row, "hero.watchlist"), Some("show"));
+    clear();
+}
+
+/// A movie page, and an episode's page (the Go to Show disc is there and only navigates).
+#[test]
+fn a_movie_and_an_episode_page_name_their_own_item_and_go_to_show_names_none() {
+    let _guard = install(Detail {
+        sid: ServerId::UNSET,
+        rk: "movie".into(),
+        kind: "movie".into(),
+        guid: "plex://movie/5d77680135a8fc45188ba331".into(),
+        resume_ms: 30_000,
+        dur_ms: 600_000,
+        ..Default::default()
+    });
+    let screen = bare(&_guard, ServerId::UNSET, "movie");
+    let row = hero_subjects(&screen);
+    for id in ["hero.play", "hero.watchlist", "hero.restart", "hero.mark_watched"] {
+        assert_eq!(named(&row, id), Some("movie"), "{id}");
+    }
+    clear();
+    drop(_guard);
+
+    let _guard = install(episode_naming_its_show());
+    let screen = bare(&_guard, ServerId::UNSET, "ep");
+    let row = hero_subjects(&screen);
+    assert_eq!(named(&row, "hero.play"), Some("ep"));
+    assert_eq!(named(&row, "hero.mark_watched"), Some("ep"));
+    assert!(row.contains(&("hero.go_to_show".to_string(), None)), "Go to Show only navigates: {row:?}");
+    clear();
+}
+
+/// The subject is the key the press ACTS on, read off the effect it pushes: the on-deck episode's for Play
+/// and for the watched toggle, and the loaded card's for a movie page that holds one.
+#[test]
+fn a_hero_controls_subject_is_the_rating_key_its_activation_acts_on() {
+    let _guard = plx_base::testlock::serial();
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("hero-subject", "127.0.0.1", 1, "t", "c");
+    let on_deck = plx_data::metadata::Episode { rk: "next-episode".into(), resume_ms: 60_000, dur_ms: 120_000, ..episode("next-episode", 3) };
+    let mut d = Detail { sid, rk: "show".into(), is_show: true, kind: "show".into(), ..Default::default() };
+    d.episodes = vec![episode("first", 1), on_deck.clone()].into();
+    d.on_deck = Some(on_deck);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+    let mut screen = bare(&_guard, sid, "show");
+    let subject = |screen: &DetailScreen, id: &str| named(&hero_subjects(screen), id).map(str::to_string);
+
+    let (_, effects) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_PLAY), Some(hero::ELEM_PLAY));
+    let played = match play_item(&effects) {
+        Some((PlayIntent::Item { rk, .. }, _)) => rk.clone(),
+        Some((PlayIntent::Movie { item, .. }, _)) => item.rk.clone(),
+        Some((PlayIntent::Live { .. }, _)) => panic!("Detail cannot tune a channel"),
+        None => panic!("Play pushes a play request"),
+    };
+    assert_eq!(subject(&screen, "hero.play").as_deref(), Some(played.as_str()));
+    assert_eq!(played, "next-episode");
+
+    let (_, effects) = step(&mut screen, &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), Some(hero::ELEM_MARK_WATCHED));
+    let marked = effects.iter().find_map(|effect| match &effect.fx {
+        Fx::App(AppFx::Store(StoreId::ViewState, StoreCmd::ViewState(ViewStateCmd::Request { rk, .. }))) => Some(rk.clone()),
+        _ => None,
+    }).expect("one watched request");
+    assert_eq!(subject(&screen, "hero.mark_watched").as_deref(), Some(marked.as_str()));
+    clear();
+    plx_plex::plex::reset_servers_for_test();
+    drop(_guard);
+
+    // a movie page that holds the card it was opened from plays THAT card's key
+    let _guard = install(Detail { sid: ServerId::UNSET, rk: "movie".into(), kind: "movie".into(), ..Default::default() });
+    let mut screen = bare(&_guard, ServerId::UNSET, "movie");
+    screen.selected = Some(plx_data::pms::PmsMovie { rk: "card".into(), ..Default::default() });
+    let (_, effects) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_PLAY), Some(hero::ELEM_PLAY));
+    let played = match play_item(&effects) {
+        Some((PlayIntent::Movie { item, .. }, _)) => item.rk.clone(),
+        Some((PlayIntent::Item { rk, .. }, _)) => rk.clone(),
+        Some((PlayIntent::Live { .. }, _)) => panic!("Detail cannot tune a channel"),
+        None => panic!("Play pushes a play request"),
+    };
+    assert_eq!(played, "card");
+    assert_eq!(subject(&screen, "hero.play").as_deref(), Some("card"));
+    clear();
+}
+
+/// Every control is placed: the ones that play or write have a subject, the ones that only navigate or open
+/// a menu or a panel have none (the trailer disc is not shown today, so only this table reaches it).
+#[test]
+fn the_hero_controls_that_play_or_write_have_a_subject_and_the_rest_have_none() {
+    let d = detail(ServerId::UNSET, "show");
+    for (ctl, acts) in [
+        (hero::HeroCtl::Play, true),
+        (hero::HeroCtl::Restart, true),
+        (hero::HeroCtl::Trailer, true),
+        (hero::HeroCtl::MarkWatched, true),
+        (hero::HeroCtl::MarkUnwatched, true),
+        (hero::HeroCtl::Watchlist, true),
+        (hero::HeroCtl::GoToShow, false),
+        (hero::HeroCtl::Alt, false),
+        (hero::HeroCtl::Version, false),
+        (hero::HeroCtl::AudioSubtitles, false),
+        (hero::HeroCtl::More, false),
+    ] {
+        assert_eq!(hero_control_subject(ctl, &d, None).is_some(), acts, "{}", ctl.a11y_name());
+    }
 }
 
 // ---- the Go to Show disc on an episode's page ------------------------------------------------
@@ -5768,9 +6108,9 @@ fn an_episode_gets_a_go_to_show_disc_that_presses_the_item_menus_navigation() {
     let mut screen = bare(&_guard, ServerId::UNSET, "ep");
     let set = screen.hero_set(test_store().view());
     assert!(set.go_show);
-    assert!(!set.more, "this profile has no deletion permission");
+    assert_eq!(hero::overflow_ctls(set).1, 0, "an episode page with this few actions has no …");
     assert!(!set.watchlist, "no plex guid: the bookmark disc is not in this row");
-    assert_eq!(hero::index_of(set, hero::HeroCtl::GoToShow), Some(1));
+    assert_eq!(hero::index_of(set, hero::HeroCtl::GoToShow), Some(2));
     let (_, fx) = step(
         &mut screen,
         &ScreenEvent::Activate(hero::ELEM_GO_TO_SHOW),
@@ -5801,6 +6141,106 @@ fn only_an_episode_page_gets_a_go_to_show_disc() {
     }
 }
 
+
+/// **The page's accessibility ids:** a show page with every section on it conforms (every element of
+/// every group projects, ids are unique, each id finds its element), the hero's controls are
+/// `hero.<word>`, the seasons `season.<i>`, an episode's two elements `episodes.still|text.<i>`, each
+/// shelf's cards `<shelf>.card.<i>` (the one far down the row, off screen, included) with the
+/// ratingKey as their subject, and the heading and the About stops answer their names.
+#[test]
+fn the_page_answers_its_ids_and_conforms() {
+    assert!(!detail_conforms().is_empty());
+}
+
+/// A show page with every section on it, run through the id conformance with the id asserts above
+/// (`ContentArg::Detail`; the coverage table calls this, and so does the test above). It lives in
+/// this test module, not in `cards_harness`, because the localization gate reads every non-test
+/// file: the fixture's `Season {i}` / `Saga` titles are not product text.
+pub(crate) fn detail_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    use plx_ui::a11y::{A11yPath, Role};
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let sid = ServerId::UNSET;
+    let movies = |prefix: &str, n: usize| -> Vec<plx_data::pms::PmsMovie> {
+        (0..n).map(|i| plx_data::pms::PmsMovie { sid, rk: format!("{prefix}{i}"), title: format!("{prefix} {i}"), ..Default::default() }).collect()
+    };
+    let d = Detail {
+        sid,
+        rk: "page".into(),
+        is_show: true,
+        kind: "show".into(),
+        seasons: (1..=3)
+            .map(|i| plx_data::metadata::Season { rk: format!("s{i}"), index: i, title: format!("Season {i}"), leaf_count: 2, viewed_leaf_count: 0 })
+            .collect(),
+        episodes: (1..=3)
+            .map(|i| plx_data::metadata::Episode { rk: format!("e{i}"), index: i, season: 1, title: format!("Episode {i}"), dur_ms: 60_000, ..Default::default() })
+            .collect::<Vec<_>>()
+            .into(),
+        related: movies("r", 40),
+        extras: (0..3).map(|i| Extra { rk: format!("x{i}"), title: format!("Extra {i}"), ..Default::default() }).collect(),
+        cast: (0..4)
+            .map(|i| plx_data::metadata::Cast { tag: format!("Actor {i}"), id: 10 + i, role: String::new(), thumb: String::new(), tag_key: String::new() })
+            .collect(),
+        collection: Some(plx_data::metadata::CollectionShelf { title: "Saga".into(), section: 1, tag: 1, members: movies("c", 5), count: 5 }),
+        ..Default::default()
+    };
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+    let mut screen = bare_held(sid, "page");
+    // the season tabs have a place once their strip is measured, which a landing does in the app
+    // (`season_metrics.update`): the held screen has had none
+    screen.season_metrics.update(test_store().view().current().expect("the page's detail is mounted"), &plx_ui::fixture::FixtureMeasure);
+    static MEASURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
+    let cx = Cx {
+        views: crate::registry::caption_fixture(),
+        tick: plx_machine::machine::Tick { ms: 0, dt_us: 16_667 },
+        measure: &MEASURE,
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
+        press: PressRead { scale: 1.0, owner: None, ..Default::default() },
+        focus: plx_machine::machine::FocusRead { current: None, ..Default::default() },
+        owner: plx_machine::machine::InputOwner::Entry(EntryId(7)),
+    };
+    namespaces.push(conform::<TestHost, _>(&screen, &cx));
+
+    let rel = |text: &str| A11yPath::parse_relative(text).expect("a well-formed id");
+    let find = |text: &str| Focusable::<TestHost>::a11y_find(&screen, &rel(text), &cx);
+    let project = |elem: u32| Focusable::<TestHost>::a11y(&screen, &elem, &cx).expect("an element of the page projects");
+
+    assert_eq!(find("hero.play"), Some(hero::ELEM_PLAY));
+    assert_eq!(project(hero::ELEM_PLAY).role, Role::Button);
+    assert_eq!(project(hero::ELEM_PLAY).subject.as_deref(), Some("e1"), "Play plays the first episode of a show not yet started");
+    assert_eq!(find("hero.nope"), None);
+    for (i, rk) in ["s1", "s2", "s3"].into_iter().enumerate() {
+        let elem = find(&format!("season.{i}")).expect("a season tab");
+        assert_eq!(Some(elem), screen.engine_key(season::elem(i).unwrap()));
+        let a = project(elem);
+        assert_eq!((a.role, a.subject.as_deref()), (Role::Tab, Some(rk)));
+    }
+    assert_eq!(find("season.3"), None, "one past the last season");
+    for (i, rk) in ["e1", "e2", "e3"].into_iter().enumerate() {
+        for (word, row) in [("still", episodes::Row::Still), ("text", episodes::Row::Text)] {
+            let elem = find(&format!("episodes.{word}.{i}")).expect("an episode's element");
+            assert_eq!(Some(elem), screen.engine_key(episodes::elem(i, row).unwrap()));
+            assert_eq!(project(elem).subject.as_deref(), Some(rk));
+        }
+    }
+    assert_eq!(find("episodes.still.3"), None, "one past the last episode");
+    for (shelf, last, rk, len) in [("related", 39, "r39", 40), ("collection", 4, "c4", 5), ("extras", 2, "x2", 3)] {
+        let elem = find(&format!("{shelf}.card.{last}")).unwrap_or_else(|| panic!("{shelf}'s last card"));
+        let a = project(elem);
+        assert_eq!((a.role, a.subject.as_deref(), a.loaded), (Role::Card, Some(rk), true), "{shelf}");
+        assert_eq!(find(&format!("{shelf}.card.{len}")), None, "{shelf}: one past the end");
+    }
+    let actor = project(find("cast.card.3").expect("the last headshot"));
+    assert_eq!((actor.label.as_deref(), actor.subject), (Some("Actor 3"), None), "a person is not a ratingKey");
+    let heading = project(find("collection.heading").expect("the collection's heading"));
+    assert_eq!((heading.role, heading.label.as_deref()), (Role::Button, Some("Saga")));
+    assert_eq!(find("about.card"), Some(about::CARD_ELEM));
+    assert_eq!(find("related.0"), None, "a card is `related.card.<i>`");
+    namespaces
+}
+
 #[path = "hero_shade_tests.rs"]
 mod hero_shade;
 
@@ -5809,7 +6249,7 @@ fn the_detail_more_disc_is_absent_without_delete_permission() {
     let _guard = install(Detail { sid: ServerId::UNSET, rk: "movie".into(),
         title: "Disposable movie".into(), kind: "movie".into(), ..Default::default() });
     let screen = bare(&_guard, ServerId::UNSET, "movie");
-    assert!(!screen.hero_set(test_store().view()).more);
+    assert!(!screen.hero_set(test_store().view()).delete_menu);
     clear();
 }
 
@@ -5823,18 +6263,64 @@ fn the_detail_more_disc_tracks_the_captured_server_delete_permission() {
         let mut inputs = crate::registry::ScreenInputs::default();
         inputs.deletable = std::sync::Arc::new(vec![(ServerId::from_raw(3), key)]);
         step_with_inputs(&mut screen, &ScreenEvent::Tick(Default::default()), None, &inputs);
-        assert!(!screen.hero_set(test_store().view()).more, "another server's permission is insufficient");
+        assert!(!screen.hero_set(test_store().view()).delete_menu, "another server's permission is insufficient");
         inputs.deletable = std::sync::Arc::new(vec![(ServerId::UNSET, key)]);
         step_with_inputs(&mut screen, &ScreenEvent::Tick(Default::default()), None, &inputs);
-        assert!(screen.hero_set(test_store().view()).more, "{kind}");
+        assert!(screen.hero_set(test_store().view()).delete_menu, "{kind}");
         let focus = Some(FocusKey { entry: EntryId(7), elem: hero::ELEM_MORE });
-        assert!(screen.hero_menu_subject(focus, test_store().view()).is_some());
+        assert!(screen.hero_overflow(focus, test_store().view(), plx_machine::machine::InstanceId(1)).is_some());
         inputs.deletable = Default::default();
         let (_, fx) = step_with_inputs(&mut screen, &ScreenEvent::Activate(hero::ELEM_MORE),
             Some(hero::ELEM_MORE), &inputs);
-        assert!(!screen.hero_set(test_store().view()).more);
-        assert!(screen.hero_menu_subject(focus, test_store().view()).is_none());
+        assert!(!screen.hero_set(test_store().view()).delete_menu);
+        assert!(screen.hero_overflow(focus, test_store().view(), plx_machine::machine::InstanceId(1)).is_none());
         assert!(!fx.iter().any(|effect| matches!(&effect.fx, Fx::App(AppFx::Content(ContentReq::ItemMenu)))));
         clear();
     }
+}
+
+#[path = "no_driver_tests.rs"]
+mod no_driver;
+
+/// W6c: a platform that composes no playback driver leaves Detail's Play pill inert (it owns no focus
+/// stop either: `no_driver`'s tests). The same press with a driver composed starts the play, so the
+/// guard is the only difference.
+#[test]
+fn the_hero_play_is_inert_when_no_playback_driver_is_composed() {
+    let sid = ServerId::UNSET;
+    for (no_driver, plays) in [(false, true), (true, false)] {
+        let _guard = install(Detail {
+            sid, rk: "movie".into(), kind: "movie".into(), part: "/library/parts/1/file.mkv".into(),
+            ..Default::default()
+        });
+        NO_DRIVER.with(|flag| flag.set(no_driver));
+        let mut screen = bare(&_guard, sid, "movie");
+        let (_, effects) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_PLAY), Some(hero::ELEM_PLAY));
+        NO_DRIVER.with(|flag| flag.set(false));
+        assert_eq!(play_item(&effects).is_some(), plays, "no_driver={no_driver}");
+        clear();
+    }
+}
+
+/// W6c: the Play pill's label wears the shared button's disabled ink while no playback driver is
+/// composed, and its ordinary ink otherwise: `Button::enabled`, not a screen-local look.
+#[test]
+fn the_play_pill_reads_disabled_when_no_playback_driver_is_composed() {
+    let sid = ServerId::UNSET;
+    let play_label = plx_os::i18n::msg::browse_detail_play();
+    let mut inks = Vec::new();
+    for no_driver in [false, true] {
+        let _guard = install(Detail { sid, rk: "movie".into(), kind: "movie".into(), ..Default::default() });
+        NO_DRIVER.with(|flag| flag.set(no_driver));
+        let screen = bare(&_guard, sid, "movie");
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let runs = plx_ui::draw_census::capture_runs(|| {
+            screen.draw_buttons(plx_ui::Painter::recording(), &cx(&measure, None), 600.0, 1.0)
+        });
+        NO_DRIVER.with(|flag| flag.set(false));
+        inks.push(runs.iter().find(|r| r.text == play_label).map(|r| r.ink));
+        clear();
+    }
+    assert_eq!(inks[1], Some(plx_ui::theme::INK_DISABLED), "no driver: the disabled ink");
+    assert!(inks[0].is_some() && inks[0] != inks[1], "a driver composed: the ordinary ink");
 }

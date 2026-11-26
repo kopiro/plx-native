@@ -33,6 +33,8 @@
 //!   words the tile has: [`label_with_states`] shows them with no part ticked, and the band opens for
 //!   them ([`status_policy`]). The deck's band is per SHELF, so
 //!   it never changes as focus walks the row.
+//! - Live TV uses [`live_tv_policy`]: channel identity and current programming remain visible
+//!   independently of the library poster setting, on Home and on both Live TV shelves.
 //! - The band's height is [`plx_ui::caption_policy::band_h`] of the same policy, everywhere (the deck
 //!   shelf's policy being [`deck_policy`] of the setting): a
 //!   shelf is handed the policy ([`plx_ui::cards::Shelf::set_caption_policy`]) and reserves, opens
@@ -72,6 +74,12 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// A setting whose caption policy differs from the default's (the Title switch on): what Settings
+/// leaves behind for a page it covered, for the tests of a page that must notice (`policy_moved`).
+#[cfg(test)]
+pub(crate) const FIXTURE_TITLE_ON: plx_plex::plex::session::UnderPosters =
+    plx_plex::plex::session::UnderPosters { title: true, ..plx_plex::plex::session::UnderPosters::DEFAULT };
+
 /// Pins an explicit test fixture's Under posters input until dropped. Fixture hosts capture this
 /// choice into ScreenInputs; production policy readers never consult it. Existing pins are retained
 /// and restored on drop, including during unwinding; no process-wide cell is written.
@@ -80,6 +88,13 @@ pub(crate) struct PolicyPin(Option<plx_plex::plex::session::UnderPosters>);
 
 #[cfg(test)]
 impl PolicyPin {
+    /// Pins `setting` until dropped: what Settings does to a page it covers.
+    pub(crate) fn set(setting: plx_plex::plex::session::UnderPosters) -> Self {
+        let before = TEST_UNDER_POSTERS.with(|cell| cell.get());
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(setting)));
+        PolicyPin(before)
+    }
+
     pub(crate) fn default_setting() -> Self {
         let before = TEST_UNDER_POSTERS.with(|cell| cell.get());
         TEST_UNDER_POSTERS.with(|cell| cell.set(Some(before.unwrap_or(plx_plex::plex::session::UnderPosters::DEFAULT))));
@@ -145,8 +160,22 @@ pub fn status_policy(policy: &CaptionPolicy) -> CaptionPolicy {
     deck_policy(policy)
 }
 
+/// A live tile needs its channel identity and programme even when poster details are hidden.
+pub fn live_tv_policy() -> CaptionPolicy {
+    CaptionPolicy::same(true, DetailParts::MOVIE_DEFAULT)
+}
+
+/// The label block of a Live TV tile: `title` over `line` (the airing's words, or the channel's identity),
+/// worded through [`live_tv_policy`] like every live label. A tile with no `line` is its title alone.
+pub fn live_label(title: String, line: Option<String>) -> TileLabel {
+    match line {
+        Some(_) => label(&live_tv_policy(), &CaptionFacts { title: Some(title), ..Default::default() }, line),
+        None => TileLabel::from_lines([Some(title), None]),
+    }
+}
+
 fn build(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>, states_survive: bool) -> TileLabel {
-    let [title, details] = caption_lines(policy, facts, plx_platform::i18n::current());
+    let [title, details] = caption_lines(policy, facts, plx_os::i18n::current());
     let details = if policy.details_for(facts.is_show).is_empty() { if states_survive { state } else { None } } else { state.or(details) };
     // No line carries a mark: what OK does is the focused still's footer cue (`ui::still_footer`),
     // not a caption's.
@@ -157,7 +186,7 @@ fn build(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>, st
 }
 
 /// A poster shelf tile's label under `policy`: Home's shelves and the Library's Recommended
-/// shelves. The tile keeps what its caption carries as a STATE: on the Continue Watching deck
+/// shelves. A live channel's current programme is its state. The tile keeps what its caption carries as a STATE: on the Continue Watching deck
 /// (`is_continue`) its time left ("8m left", "S3 · E4 · 8m left", or "S2 · E1 · New episode" for a
 /// next-up episode; an unnumbered episode leads with its show's name instead of the address) is the details line
 /// whatever kind the setting asks for. An
@@ -166,13 +195,16 @@ fn build(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>, st
 /// fallback line under Nothing (the shelf's band stays open, per shelf).
 pub fn shelf_label(policy: &CaptionPolicy, item: &plx_data::pms::PmsMovie, is_continue: bool) -> TileLabel {
     let facts = crate::registry::tile_facts::caption_facts(item);
-    let state = is_continue
-        .then(|| plx_ui::cards::cw_caption(&crate::registry::tile_facts::of(item)))
-        .flatten()
-        .map(|c| c.to_string_lossy().into_owned());
+    let policy = &if plx_data::livetv::live_channel_of(item).is_some() { live_tv_policy() } else { *policy };
+    let state = if plx_data::livetv::live_channel_of(item).is_some() {
+        (!item.show_title.is_empty()).then(|| item.show_title.clone())
+    } else {
+        is_continue.then(|| plx_ui::cards::cw_caption(&crate::registry::tile_facts::of(item)))
+            .flatten().map(|c| c.to_string_lossy().into_owned())
+    };
     // A deck tile with a state is worded by the deck's policy (its progress line shows under
     // Nothing); one with no state to show has nothing to say under Nothing, only the shelf's band.
-    let policy = &if state.is_some() { deck_policy(policy) } else { *policy };
+    let policy = &if is_continue && state.is_some() { deck_policy(policy) } else { *policy };
     label(policy, &facts, state)
 }
 
@@ -220,6 +252,13 @@ mod tests {
         [text(&l.title), text(&l.caption)]
     }
 
+    /// A Live TV tile's label: the title over the airing's words, or the title alone when there are none.
+    #[test]
+    fn a_live_label_is_its_title_over_its_line_or_the_title_alone() {
+        assert_eq!(lines(&live_label("On now: Show".into(), Some("Started 2 min ago".into()))), [Some("On now: Show".into()), Some("Started 2 min ago".into())]);
+        assert_eq!(lines(&live_label("Seven".into(), None)), [Some("Seven".into()), None]);
+    }
+
     /// **Every landscape block is the one builder's**: an episode still, a Search result borrowed from
     /// another server, and an Extra's clip all come out shadowed (like every caption), a line with no
     /// words absent, the credit after the fact, an untitled episode by its address.
@@ -252,6 +291,19 @@ mod tests {
         let episode = CaptionFacts { title: Some("Pilot".into()), episode: Some((1, 8)), ..Default::default() };
         let p = CaptionPolicy::same(false, DetailParts::MOVIE_DEFAULT);
         assert_eq!(lines(&label(&p, &episode, None)), [None, Some("S1 \u{b7} E8".into())]);
+    }
+
+    #[test]
+    fn live_channels_share_the_number_name_and_current_programme_caption() {
+        let channel = plx_data::pms::PmsMovie { kind: plx_data::livetv::KIND_LIVE_CHANNEL,
+            rk: "livetv:7:C101".into(), title: "101 Family Channel".into(), show_title: "Family Show".into(),
+            ..Default::default() };
+        assert_eq!(lines(&shelf_label(&CaptionPolicy::same(true, DetailParts::MOVIE_DEFAULT), &channel, false)),
+            [Some("101 Family Channel".into()), Some("Family Show".into())]);
+        assert_eq!(lines(&shelf_label(&CaptionPolicy::same(true, DetailParts::NONE), &channel, false)),
+            [Some("101 Family Channel".into()), Some("Family Show".into())]);
+        assert_eq!(lines(&shelf_label(&CaptionPolicy::same(false, DetailParts::NONE), &channel, false)),
+            [Some("101 Family Channel".into()), Some("Family Show".into())]);
     }
 
     fn deck_episode() -> plx_data::pms::PmsMovie {

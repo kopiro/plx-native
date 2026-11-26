@@ -24,7 +24,7 @@ impl Host for HostFixture {
 }
 impl crate::registry::ScreenInputsLike for HostFixture {
     fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
-        crate::registry::empty_fixture()
+        crate::registry::caption_fixture()
     }
 }
 
@@ -198,9 +198,9 @@ fn back_pops_the_page() {
 fn the_empty_read_out_fits_in_every_shipped_language() {
     use plx_base::fontcov::advances::ShippedMeasure;
     let _guard = plx_base::testlock::serial();
-    for language in plx_platform::i18n::SHIPPED {
-        let _lang = plx_platform::i18n::language_on_this_thread_for_test(language);
-        let text = plx_platform::i18n::msg::recommended_page_empty();
+    for language in plx_os::i18n::SHIPPED {
+        let _lang = plx_os::i18n::language_on_this_thread_for_test(language);
+        let text = plx_os::i18n::msg::recommended_page_empty();
         assert!(!text.is_empty(), "{}: empty string", language.tag());
         let width = plx_machine::machine::Measure::width(&ShippedMeasure, &std::ffi::CString::new(text).unwrap(), plx_ui::theme::size::BODY, false);
         assert!(width <= plx_ui::widgets::StatusOverlay::REASON_W * 1.6,
@@ -342,7 +342,7 @@ fn the_title_row_is_the_crumb_with_the_library_as_the_link_back() {
     assert_eq!(library.ink, plx_ui::theme::CONTROL_TEXT_REST, "the link is 65% white");
     assert!(!library.bold);
     assert!((library.at.x - plx_ui::page_header::TEXT_X0).abs() < 0.5, "the root starts at x 96, as on the Collections page");
-    let page_name = at(plx_platform::i18n::msg::library_header_recommended());
+    let page_name = at(plx_os::i18n::msg::library_header_recommended());
     assert!(!page_name.bold, "no bold heading");
     assert!(page_name.at.x > library.at.x + library.at.w, "the page name follows the library and the chevron");
     assert!(runs.iter().all(|r| !r.text.contains('\u{b7}') || r.text.len() > 3), "the old 'Recommended · Movies' joined heading is gone");
@@ -432,4 +432,27 @@ fn the_crumb_row_is_built_once_per_key_not_once_per_question() {
     assert_eq!(page.probe_header_builds(), built + 1, "the library's new name builds the row once");
     for _ in 0..10 { ask(&fixture); }
     assert_eq!(page.probe_header_builds(), built + 1, "and the questions after it build none");
+}
+
+/// **Recommended, covered, notices that Settings changed what its shelves draw under the posters**
+/// (`step`'s head): a page returning from under a cover raises no damage of its own, and typed page
+/// damage is what retakes a frozen host's snapshot.
+#[test]
+fn recommended_damages_the_page_when_the_under_posters_setting_moved_under_a_cover() {
+    use crate::registry::captions::{PolicyPin, FIXTURE_TITLE_ON};
+    use plx_plex::plex::session::UnderPosters;
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::shelves(&["Trending"], 6);
+    let mut page = fixture.screen();
+    let mut uncover_under = |setting: UnderPosters| {
+        let _pin = PolicyPin::set(setting);
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        page.step(&ScreenEvent::Uncover, &fixture.cx(None),
+            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+        present.page_damaged()
+    };
+    assert!(!uncover_under(UnderPosters::DEFAULT), "control: an unchanged setting damages nothing");
+    assert!(uncover_under(FIXTURE_TITLE_ON), "the Title switch moved the caption policy");
+    assert!(!uncover_under(FIXTURE_TITLE_ON), "...once");
 }

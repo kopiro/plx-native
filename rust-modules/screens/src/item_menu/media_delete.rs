@@ -3,7 +3,7 @@ use super::*;
 use crate::registry::{MediaDeleteRequest, ScreenInputsLike};
 use plx_plex::plex::DeleteResult;
 use plx_ui::decision_alert::{Answers, Choice, DecisionAlert};
-use plx_platform::i18n::msg;
+use plx_os::i18n::msg;
 
 const CANCEL: u32 = 240;
 const DELETE: u32 = 241;
@@ -90,7 +90,7 @@ mod tests {
         let _guard = plx_base::testlock::serial();
         let arg = ItemMenuArg { sid: plx_plex::plex::ServerId::UNSET, rk: "42".into(),
             kind: ItemMenuKind::Detail { kind: 0, title: "Disposable movie".into(),
-                show_rk: String::new() },
+                show_rk: String::new(), rows: vec![], opener: plx_machine::machine::InstanceId(1) },
             host: EntryId(1), focus: None, anchor: [0; 4], loaded_episode: false,
             from_home: false, catalog: None, watchlist: None };
         let mut menu = ItemMenuScreen::new(EntryId(7), arg);

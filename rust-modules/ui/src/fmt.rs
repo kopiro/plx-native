@@ -2,7 +2,7 @@
 //! same value can't render differently across screens (the "2 hr 15 min" vs "2h 15m" vs
 //! "0 hr 45 min" drift this replaces).
 
-use plx_platform::i18n::{msg, LocaleContext, MonthWidth};
+use plx_os::i18n::{msg, LocaleContext, MonthWidth};
 
 pub fn converts_on_server() -> &'static str { msg::core_converts_on_server() }
 
@@ -12,7 +12,7 @@ pub fn converts_on_server() -> &'static str { msg::core_converts_on_server() }
 /// spelled-out one ("14 min"), and which a value wore depended on the screen it was on; the shape
 /// has one home now and the minutes-first split lives in [`duration_minutes_in`] only.
 pub fn duration(ms: i64) -> String {
-    duration_in(plx_platform::i18n::current(), ms)
+    duration_in(plx_os::i18n::current(), ms)
 }
 
 /// [`duration`] for a context other than the thread's (a caption that carries its own).
@@ -42,9 +42,9 @@ fn split_hours(mins: i64) -> (i64, i64) {
 pub fn secs_short(ms: i64) -> String {
     let ms = ms.max(0);
     if ms < 10_000 {
-        plx_platform::i18n::msg::core_seconds(&plx_platform::i18n::current().decimal(ms / 100, 1))
+        plx_os::i18n::msg::core_seconds(&plx_os::i18n::current().decimal(ms / 100, 1))
     } else {
-        plx_platform::i18n::msg::core_seconds(&plx_platform::i18n::current().number(ms / 1_000))
+        plx_os::i18n::msg::core_seconds(&plx_os::i18n::current().number(ms / 1_000))
     }
 }
 
@@ -53,7 +53,7 @@ pub fn secs_short(ms: i64) -> String {
 #[cfg(test)]
 mod one_shape_tests {
     use super::*;
-    use plx_platform::i18n::{language_on_this_thread_for_test, Preference, SHIPPED};
+    use plx_os::i18n::{language_on_this_thread_for_test, Preference, SHIPPED};
 
     const MINUTE: i64 = 60_000;
 
@@ -64,7 +64,7 @@ mod one_shape_tests {
             (0, "0m"), (-5 * MINUTE, "0m"), (134 * MINUTE + 59_999, "2h 14m")] {
             assert_eq!(duration(ms), want, "{ms} ms");
         }
-        let cx = plx_platform::i18n::current();
+        let cx = plx_os::i18n::current();
         assert_eq!(duration_minutes_in(cx, 134), duration_in(cx, 134 * MINUTE), "minutes and milliseconds are one rule");
         assert_eq!(time_left(8 * MINUTE), "8m left");
         assert_eq!(time_left(62 * MINUTE), "1h 2m left");
@@ -79,7 +79,7 @@ mod one_shape_tests {
         for language in SHIPPED {
             let tag = language.tag();
             let _g = language_on_this_thread_for_test(language);
-            let cx = plx_platform::i18n::current();
+            let cx = plx_os::i18n::current();
             for minutes in [8, 62] {
                 let (left, length) = (time_left_minutes_in(cx, minutes), duration_minutes_in(cx, minutes));
                 assert!(left.contains(&length), "{tag}: {left:?} does not carry the duration {length:?}");
@@ -131,7 +131,7 @@ fn seconds_scale_durations_keep_the_distinctions_that_matter() {
 /// Time-remaining for a Continue-Watching item — "8m left" / "1h 2m left" (rounded up to
 /// the next whole minute, floored at 1). `remaining_ms` is duration − viewOffset.
 pub fn time_left(remaining_ms: i64) -> String {
-    time_left_minutes_in(plx_platform::i18n::current(), remaining_minutes(remaining_ms))
+    time_left_minutes_in(plx_os::i18n::current(), remaining_minutes(remaining_ms))
 }
 
 fn remaining_minutes(remaining_ms: i64) -> i64 {
@@ -140,7 +140,7 @@ fn remaining_minutes(remaining_ms: i64) -> i64 {
 
 /// Time remaining inside a playback control: the compact duration without the word “left”.
 pub fn remaining_duration(remaining_ms: i64) -> String {
-    duration_minutes_in(plx_platform::i18n::current(), remaining_minutes(remaining_ms))
+    duration_minutes_in(plx_os::i18n::current(), remaining_minutes(remaining_ms))
 }
 
 /// [`time_left`] from whole minutes, in a given context; at least a minute (the line promises
@@ -155,13 +155,188 @@ pub fn time_left_minutes_in(cx: &LocaleContext, mins: i64) -> String {
 /// shares 388 px with an episode tag and a progress bar). Rounded up to the next whole minute and
 /// never zero, as [`time_left`] is. The Home Resume pill uses [`remaining_duration`].
 pub fn footer_left(remaining_ms: i64) -> String {
-    footer_left_minutes_in(plx_platform::i18n::current(), remaining_minutes(remaining_ms))
+    footer_left_minutes_in(plx_os::i18n::current(), remaining_minutes(remaining_ms))
 }
 
 /// [`footer_left`] from whole minutes, in a given context.
 pub fn footer_left_minutes_in(cx: &LocaleContext, mins: i64) -> String {
     let (h, m) = split_hours(mins.max(1));
     if h > 0 { msg::core_footer_left_hours_in(cx, h, m) } else { msg::core_footer_left_minutes_in(cx, m) }
+}
+
+/// **Wall-clock time as one frame's publication**: Unix milliseconds and the viewer's UTC offset in
+/// seconds, the pair every clock face, "22m left", progress fraction and projected finish is derived
+/// from. The app publishes it once per iteration (`AppViews::wall`) from its one wall-clock door; a
+/// screen receives it and reads no clock, the way it receives `today`. Whole-minute offsets only,
+/// which is every zone in use.
+///
+/// The milliseconds are kept because the projected finish adds the remaining media time to them: from
+/// the whole second the sum would take two values per second of steady playback (the position moves
+/// inside the second), and a finish near a minute boundary would flip a minute once a second. Every
+/// other face is whole-second ([`Wall::unix_s`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Wall {
+    pub unix_ms: i64,
+    pub utc_offset_s: i32,
+}
+
+impl Wall {
+    /// A wall time at a whole Unix second.
+    pub const fn from_secs(unix_s: i64, utc_offset_s: i32) -> Self {
+        Wall { unix_ms: unix_s.saturating_mul(1_000), utc_offset_s }
+    }
+
+    /// The Unix second it falls in (rounded toward negative infinity): what the clock faces, the
+    /// airing phase and its progress read.
+    pub const fn unix_s(self) -> i64 {
+        self.unix_ms.div_euclid(1_000)
+    }
+}
+
+/// Which surface an airing's line is worded for: the two shapes differ in what a recent start says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Airing {
+    /// A Recent-channels tile's label: "Started 4 min ago · 1h 18m left", else "21:00–22:00 · 22m left".
+    Tile,
+    /// The player banner's time line: "21:37–22:39 · Started 1 min ago", else "21:00–22:00 · 22m left".
+    Banner,
+}
+
+/// Minutes after its start a programme still counts as "just started" (whole minutes: the tenth
+/// minute lasts until the eleventh begins).
+const JUST_STARTED_MINUTES: i64 = 10;
+
+/// Whether the guide gave a programme an airing at all: both ends known and in order.
+fn has_airing(begin: i64, end: i64) -> bool {
+    begin > 0 && end > begin
+}
+
+/// **Where an airing stands against the clock**: the one decision every airing surface words, so
+/// the line, the time left and the progress cannot disagree about it. Made by [`phase`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiringPhase {
+    /// The guide has no airing (an end not after a start, or either unknown).
+    Unknown,
+    /// Not begun: it starts in `starts_in` seconds.
+    Upcoming { starts_in: i64 },
+    /// On air, at most [`JUST_STARTED_MINUTES`] whole minutes in: `minutes` since the start and
+    /// `left` whole minutes (rounded up, at least one) to the end.
+    JustStarted { minutes: i64, left: i64 },
+    /// On air, later than that, with `left` whole minutes (rounded up, at least one) to the end.
+    Running { left: i64 },
+    /// `now` has reached the end: a programme that is over has no time left, and the guide re-read
+    /// replaces it within seconds.
+    Over,
+}
+
+impl AiringPhase {
+    /// The phase as one number that changes exactly when what an airing surface draws from it
+    /// does: the HUD's clock fingerprint mixes it in so a frame is owed when the line's words
+    /// change, without the line being worded every frame to find out.
+    pub fn stamp(self) -> u64 {
+        let pack = |tag: u64, a: i64, b: i64| tag | (a.clamp(0, 0xfff_ffff) as u64) << 8 | (b.clamp(0, 0xfff_ffff) as u64) << 36;
+        match self {
+            // The words of an upcoming airing do not change until it begins.
+            Self::Unknown => 0,
+            Self::Upcoming { .. } => 1,
+            Self::JustStarted { minutes, left } => pack(2, minutes, left),
+            Self::Running { left } => pack(3, 0, left),
+            Self::Over => 4,
+        }
+    }
+}
+
+/// Where an airing from `begin` to `end` stands at `now` (all Unix seconds); `Over` is decided
+/// before `JustStarted`, so a five-minute programme seven minutes in is over, not just started.
+pub fn phase(begin: i64, end: i64, now: i64) -> AiringPhase {
+    if !has_airing(begin, end) {
+        return AiringPhase::Unknown;
+    }
+    if now < begin {
+        return AiringPhase::Upcoming { starts_in: begin - now };
+    }
+    if now >= end {
+        return AiringPhase::Over;
+    }
+    let left = remaining_minutes((end - now).saturating_mul(1_000));
+    match (now - begin) / 60 {
+        minutes if minutes <= JUST_STARTED_MINUTES => AiringPhase::JustStarted { minutes, left },
+        _ => AiringPhase::Running { left },
+    }
+}
+
+/// How far into its airing `wall` is, `0.0..=1.0`: the amber bar's and the banner progress's input.
+/// `None` for an airing the guide does not have; not yet begun is 0, over is 1.
+pub fn frac(begin: i64, end: i64, wall: Wall) -> Option<f32> {
+    match phase(begin, end, wall.unix_s()) {
+        AiringPhase::Unknown => None,
+        AiringPhase::Upcoming { .. } => Some(0.0),
+        AiringPhase::Over => Some(1.0),
+        AiringPhase::JustStarted { .. } | AiringPhase::Running { .. } => Some((wall.unix_s() - begin) as f32 / (end - begin) as f32),
+    }
+}
+
+/// **Time left of an airing**, in the form that follows a middle dot ([`footer_left_minutes_in`], the
+/// `core.footer_left_*` strings: an airing's line says it after "21:00–22:00 ·", where the caption
+/// wording of [`time_left_minutes_in`] is sentence-initial in several languages, "Noch 22 min"):
+/// "22m left", "1h 18m left" (never "1h 18m" zero-padded), rounded up to the next whole minute
+/// ([`remaining_minutes`], as [`footer_left`] counts). `None` unless the programme is on air: one
+/// the guide does not have, one not yet begun and one that is over have no time left.
+pub fn left_in(cx: &LocaleContext, begin: i64, end: i64, wall: Wall) -> Option<String> {
+    match phase(begin, end, wall.unix_s()) {
+        AiringPhase::JustStarted { left, .. } | AiringPhase::Running { left } => Some(footer_left_minutes_in(cx, left)),
+        AiringPhase::Unknown | AiringPhase::Upcoming { .. } | AiringPhase::Over => None,
+    }
+}
+
+/// [`left_in`] in the thread's locale.
+pub fn left(begin: i64, end: i64, wall: Wall) -> Option<String> {
+    left_in(plx_os::i18n::current(), begin, end, wall)
+}
+
+/// **A Unix instant as the viewer's `[hour, minute]`** (`offset_s` seconds east of UTC, the one
+/// offset a frame's [`Wall`] publishes): the arithmetic every clock face is made from, here once.
+/// The player HUD's projected finish time takes it too, and words it at draw
+/// (`LocaleContext::time_of_day`). `None` only where the sum overflows.
+pub fn clock_hm(unix_s: i64, offset_s: i64) -> Option<[i32; 2]> {
+    let second_of_day = unix_s.checked_add(offset_s)?.rem_euclid(86_400);
+    Some([i32::try_from(second_of_day / 3_600).ok()?, i32::try_from(second_of_day % 3_600 / 60).ok()?])
+}
+
+/// A Unix instant as the viewer's clock face, in the television's clock style: "21:00" or "9:00 PM".
+fn face_in(cx: &LocaleContext, unix_s: i64, offset_s: i64) -> Option<String> {
+    cx.time_of_day(clock_hm(unix_s, offset_s)?)
+}
+
+/// **The one line that words an airing against the clock**, for either surface ([`Airing`]), from
+/// its [`phase`]: within ten minutes of the start it says how long ago it started, while on air
+/// otherwise the clock times and how long is left, and before the start or after the end the clock
+/// times alone. `begin`/`end` are Unix seconds from the guide and `wall` the frame's published time
+/// (the function reads no clock). `None` for an airing the guide does not have. Both clock times use
+/// the one offset published for `wall`, so an airing that spans a daylight-saving change draws its
+/// far end an hour off (stated in the plan, D1).
+pub fn airing_line_in(cx: &LocaleContext, surface: Airing, begin: i64, end: i64, wall: Wall) -> Option<String> {
+    let phase = phase(begin, end, wall.unix_s());
+    if phase == AiringPhase::Unknown {
+        return None;
+    }
+    let offset_s = i64::from(wall.utc_offset_s);
+    // The generated accessor takes its arguments in name order: end, then start.
+    let range = msg::core_airing_range_in(cx, &face_in(cx, end, offset_s)?, &face_in(cx, begin, offset_s)?);
+    let pair = |first: String, second: String| msg::core_airing_pair_in(cx, &first, &second);
+    let left = |left| footer_left_minutes_in(cx, left);
+    Some(match (phase, surface) {
+        (AiringPhase::JustStarted { minutes, left: remaining }, Airing::Tile) => pair(msg::core_airing_started_in(cx, minutes), left(remaining)),
+        (AiringPhase::JustStarted { minutes, .. }, Airing::Banner) => pair(range, msg::core_airing_started_in(cx, minutes)),
+        (AiringPhase::Running { left: remaining }, _) => pair(range, left(remaining)),
+        (AiringPhase::Upcoming { .. } | AiringPhase::Over, _) => range,
+        (AiringPhase::Unknown, _) => return None,
+    })
+}
+
+/// [`airing_line_in`] in the thread's locale.
+pub fn airing_line(surface: Airing, begin: i64, end: i64, wall: Wall) -> Option<String> {
+    airing_line_in(plx_os::i18n::current(), surface, begin, end, wall)
 }
 
 /// **The episode tag that leads a still's footer line**, with its trailing middle dot: `"S2 E4 ·"`
@@ -180,7 +355,7 @@ pub fn footer_tag_in(cx: &LocaleContext, season: i64, index: i64) -> String {
 
 /// [`footer_tag_in`] in the thread's language.
 pub fn footer_tag(season: i64, index: i64) -> String {
-    footer_tag_in(plx_platform::i18n::current(), season, index)
+    footer_tag_in(plx_os::i18n::current(), season, index)
 }
 
 /// **The one release-date phrase** — "Coming 12 Mar" — for an unreleased title: the Watchlist's focus
@@ -196,7 +371,7 @@ pub fn coming_on(release: &str, width: MonthWidth) -> Option<String> {
     if parts.next().is_some() {
         return None;
     }
-    let date = plx_platform::i18n::current().month_day(month, day, width)?;
+    let date = plx_os::i18n::current().month_day(month, day, width)?;
     Some(msg::watchlist_state_coming_on(&date))
 }
 
@@ -239,7 +414,7 @@ pub fn clock(ms: i64) -> String {
 /// apart deliberately: this one is a printed mark on artwork, sized and inked as its own line,
 /// while the ordinal is a run inside sentences elsewhere in the app.
 pub fn episode_address(season: i64, index: i64) -> String {
-    episode_address_in(plx_platform::i18n::current(), season, index)
+    episode_address_in(plx_os::i18n::current(), season, index)
 }
 
 /// [`episode_address`] in `cx`'s language, for the formatters that carry a locale.
@@ -260,7 +435,7 @@ pub fn episode_address_in(cx: &LocaleContext, season: i64, index: i64) -> String
 /// title (a specials folder). A number that is not positive is no number, so it is never printed
 /// as one ("Season 0").
 pub fn season_identity(number: i64, own: &str) -> String {
-    season_identity_in(plx_platform::i18n::current(), number, own)
+    season_identity_in(plx_os::i18n::current(), number, own)
 }
 
 /// [`season_identity`] in `cx`'s language, for the formatters that carry a locale.
@@ -280,7 +455,7 @@ pub fn season_identity_in(cx: &LocaleContext, number: i64, own: &str) -> String 
 /// every collection tile's caption (shelf, Collections page) and the search hit, so a collection is
 /// never "6 items" on one screen and "6 films" on the next.
 pub fn collection_count(subtype: Option<&str>, n: i64) -> String {
-    collection_count_in(plx_platform::i18n::current(), subtype, n)
+    collection_count_in(plx_os::i18n::current(), subtype, n)
 }
 
 /// [`collection_count`] in `cx`'s language, for the formatters that carry a locale.
@@ -315,7 +490,7 @@ pub fn item_count(n: i64) -> String {
 /// number (the server sent none, or numbered the specials 0), so it is never printed as one:
 /// "S1, E0" is not an address. [`episode_address_in`] is the same rule for the printed mark.
 pub fn episode_ordinal(season: i64, index: i64) -> String {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     match (season > 0, index > 0) {
         (true, true) => msg::core_episode_ordinal(index, season),
         (false, true) => msg::core_episode(index),
@@ -343,9 +518,9 @@ pub fn episode_context(show: &str, season: i64, index: i64) -> String {
 /// rung is this card's own row).
 pub fn episode_card_kicker(index: i64) -> String {
     if index > 0 {
-        plx_platform::i18n::msg::browse_detail_episode_number(index)
+        plx_os::i18n::msg::browse_detail_episode_number(index)
     } else {
-        plx_platform::i18n::msg::browse_kind_episode().to_uppercase()
+        plx_os::i18n::msg::browse_kind_episode().to_uppercase()
     }
 }
 
@@ -368,7 +543,7 @@ pub fn episode_card_kicker(index: i64) -> String {
 /// read-out. It was written twice with two different empty-handle behaviours and interpolated a
 /// third time inline — exactly the drift this module exists to prevent.
 pub fn shared_by(handle: &str) -> Option<String> {
-    (!handle.is_empty()).then(|| plx_platform::i18n::msg::core_shared_by(handle))
+    (!handle.is_empty()).then(|| plx_os::i18n::msg::core_shared_by(handle))
 }
 
 /// The separator between the episode's numbering and its title in [`episode_kicker`] (`"S2, E3 · Laura"`):
@@ -383,6 +558,12 @@ pub const KICKER_SEPARATOR: &str = " \u{b7} ";
 /// them in step.
 pub fn episode_kicker(season: i64, index: i64, title: &str) -> String {
     join_present(&[&episode_ordinal(season, index), title], KICKER_SEPARATOR)
+}
+
+/// Format names are shared by the quality caption and the identity chips.
+pub fn dynamic_range(range: plx_base::detail_parts::DynamicRange) -> Option<&'static str> {
+    use plx_base::detail_parts::DynamicRange::*;
+    match range { Sdr => None, Hdr => Some("HDR"), DolbyVision => Some("Dolby Vision") }
 }
 
 /// The media badge for a video version — `"4K"` / `"1080p"` / `"SD"`, or None when the item has no
@@ -438,18 +619,18 @@ mod tests {
     /// card's kicker) leave the empty part out rather than print "S1, E0" or a trailing dot.
     #[test]
     fn an_unnumbered_episode_never_prints_a_zero_address() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         for language in SHIPPED {
             let _g = language_on_this_thread_for_test(language);
             let tag = language.tag();
-            assert_eq!(episode_ordinal(1, 3), plx_platform::i18n::msg::core_episode_ordinal(3, 1), "{tag}");
+            assert_eq!(episode_ordinal(1, 3), plx_os::i18n::msg::core_episode_ordinal(3, 1), "{tag}");
             for (season, index) in [(1, 0), (0, 3), (0, 0), (-1, -1), (2, -1)] {
                 let ordinal = episode_ordinal(season, index);
                 assert!(!ordinal.contains('0') && !ordinal.contains("-1"), "{tag}: ({season}, {index}) read {ordinal:?}");
             }
             assert_eq!(episode_ordinal(0, 0), "", "{tag}");
-            assert_eq!(episode_ordinal(0, 3), plx_platform::i18n::msg::core_episode(3), "{tag}: no season, the episode alone");
-            assert_eq!(episode_ordinal(2, 0), plx_platform::i18n::msg::core_season(2), "{tag}: no episode, the season alone");
+            assert_eq!(episode_ordinal(0, 3), plx_os::i18n::msg::core_episode(3), "{tag}: no season, the episode alone");
+            assert_eq!(episode_ordinal(2, 0), plx_os::i18n::msg::core_season(2), "{tag}: no episode, the season alone");
             assert_eq!(episode_kicker(1, 0, "Pilot"), format!("{} \u{b7} Pilot", episode_ordinal(1, 0)), "{tag}");
             assert_eq!(episode_kicker(0, 0, "Pilot"), "Pilot", "{tag}: nothing numbered leaves the title alone");
             assert_eq!(episode_kicker(0, 0, ""), "", "{tag}");
@@ -457,9 +638,9 @@ mod tests {
             assert_eq!(episode_context("Show", 1, 3), format!("Show  \u{b7}  {}", episode_ordinal(1, 3)), "{tag}");
             let kicker = episode_card_kicker(0);
             assert!(!kicker.contains('0') && !kicker.is_empty(), "{tag}: the card's kicker without a number is {kicker:?}");
-            assert_eq!(kicker, plx_platform::i18n::msg::browse_kind_episode().to_uppercase(), "{tag}: the kind word");
-            assert_eq!(episode_card_kicker(3), plx_platform::i18n::msg::browse_detail_episode_number(3), "{tag}");
-            assert_eq!(season_identity_in(plx_platform::i18n::current(), 0, ""), plx_platform::i18n::msg::browse_detail_specials(), "{tag}");
+            assert_eq!(kicker, plx_os::i18n::msg::browse_kind_episode().to_uppercase(), "{tag}: the kind word");
+            assert_eq!(episode_card_kicker(3), plx_os::i18n::msg::browse_detail_episode_number(3), "{tag}");
+            assert_eq!(season_identity_in(plx_os::i18n::current(), 0, ""), plx_os::i18n::msg::browse_detail_specials(), "{tag}");
         }
     }
 
@@ -469,7 +650,7 @@ mod tests {
     /// "фильм" with "1 фильм", but not the whole noun with "2 фильма" or "5 фильмов".
     #[test]
     fn the_collection_heading_names_the_noun_the_count_uses() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         for language in SHIPPED {
             let _g = language_on_this_thread_for_test(language);
             for subtype in [Some("movie"), Some("show"), Some("episode"), None] {
@@ -489,15 +670,15 @@ mod tests {
     /// this, so "6 items" and "6 films" cannot name one collection.
     #[test]
     fn a_collection_is_counted_in_the_noun_of_its_subtype() {
-        let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _g = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         assert_eq!(collection_count(Some("movie"), 6), "6 films");
         assert_eq!(collection_count(Some("movie"), 1), "1 film");
         assert_eq!(collection_count(Some("show"), 3), "3 shows");
         assert_eq!(collection_count(Some("episode"), 12), "12 items", "a subtype with no noun of its own is items");
         assert_eq!(collection_count(None, 12), "12 items", "before the subtype is known");
         assert_eq!(super::item_count(1), "1 item");
-        let de = plx_platform::i18n::LocaleContext::resolve(plx_platform::i18n::Preference::De, None, None, None, None);
-        assert_eq!(collection_count_in(&de, Some("movie"), 6), plx_platform::i18n::msg::browse_person_films_in(&de, 6));
+        let de = plx_os::i18n::LocaleContext::resolve(plx_os::i18n::Preference::De, None, None, None, None);
+        assert_eq!(collection_count_in(&de, Some("movie"), 6), plx_os::i18n::msg::browse_person_films_in(&de, 6));
     }
 
     /// The mapping is fed PMS's own values, and PMS string-encodes them — including the ones that
@@ -565,7 +746,7 @@ fn pretty_date_with(iso: &str, year: i64, named_month: bool) -> String {
             parts[2].parse::<i64>(),
         ) {
             if let (Ok(y), Ok(m), Ok(d)) = (i32::try_from(y), u8::try_from(mo), u8::try_from(da)) {
-                let cx = plx_platform::i18n::current();
+                let cx = plx_os::i18n::current();
                 if let Some(date) = if named_month { cx.date_medium(y, m, d) } else { cx.date(y, m, d) } { return date; }
             }
         }
@@ -594,7 +775,7 @@ pub enum RatingScale {
 /// would read as a 9.1% score, so the badge's number is put back into the provider's own units here.
 pub fn rating_score(scale: RatingScale, value: f64) -> String {
     match scale {
-        RatingScale::OutOfTen => plx_platform::i18n::current().decimal((value * 10.0).round() as i64, 1),
+        RatingScale::OutOfTen => plx_os::i18n::current().decimal((value * 10.0).round() as i64, 1),
         RatingScale::Percent => percent((value * 10.0).round().clamp(0.0, 100.0) as i64),
     }
 }
@@ -602,20 +783,20 @@ pub fn rating_score(scale: RatingScale, value: f64) -> String {
 /// A whole percentage in the UI locale: the catalog pattern owns the sign's placement (German,
 /// Spanish and Belarusian set it off with a no-break space; English does not).
 pub fn percent(value: i64) -> String {
-    plx_platform::i18n::msg::core_percent(&plx_platform::i18n::current().number(value))
+    plx_os::i18n::msg::core_percent(&plx_os::i18n::current().number(value))
 }
 
 /// `value` rounded to `scale` fractional digits, in the UI locale's numerals and separators.
 pub fn decimal(value: f64, scale: i16) -> String {
     let factor = 10i64.pow(u32::try_from(scale).unwrap_or(0)) as f64;
-    plx_platform::i18n::current().decimal((value * factor).round() as i64, scale)
+    plx_os::i18n::current().decimal((value * factor).round() as i64, scale)
 }
 
 /// [`decimal`] that always carries a sign, as a delta is written (`+0.4`, `-1.2`).
 pub fn signed_decimal(value: f64, scale: i16) -> String {
     let factor = 10i64.pow(u32::try_from(scale).unwrap_or(0)) as f64;
     let scaled = (value * factor).round() as i64;
-    let digits = plx_platform::i18n::current().decimal(scaled, scale);
+    let digits = plx_os::i18n::current().decimal(scaled, scale);
     if scaled >= 0 {
         format!("+{digits}")
     } else {
@@ -627,9 +808,9 @@ pub fn signed_decimal(value: f64, scale: i16) -> String {
 /// locale's numerals and unit spelling.
 pub fn bitrate(kbps: i64) -> String {
     if kbps >= 1000 {
-        plx_platform::i18n::msg::widgets_tracks_mbps(&decimal(kbps as f64 / 1000.0, 1))
+        plx_os::i18n::msg::widgets_tracks_mbps(&decimal(kbps as f64 / 1000.0, 1))
     } else {
-        plx_platform::i18n::msg::widgets_tracks_kbps(&plx_platform::i18n::current().number(kbps))
+        plx_os::i18n::msg::widgets_tracks_kbps(&plx_os::i18n::current().number(kbps))
     }
 }
 
@@ -637,7 +818,7 @@ pub fn bitrate(kbps: i64) -> String {
 /// `scales` is the number of fractional digits for GB, MB and kB respectively; a count below a
 /// kilobyte is whole bytes (`B`).
 pub fn bytes(bytes: i64, scales: (i16, i16, i16)) -> String {
-    use plx_platform::i18n::msg;
+    use plx_os::i18n::msg;
     const K: f64 = 1024.0;
     let b = bytes as f64;
     if b >= K * K * K {
@@ -647,7 +828,7 @@ pub fn bytes(bytes: i64, scales: (i16, i16, i16)) -> String {
     } else if b >= K {
         msg::core_unit_kb(&decimal(b / K, scales.2))
     } else {
-        msg::core_unit_b(&plx_platform::i18n::current().number(bytes))
+        msg::core_unit_b(&plx_os::i18n::current().number(bytes))
     }
 }
 
@@ -660,5 +841,228 @@ pub fn rating_suffix(scale: RatingScale) -> &'static str {
     match scale {
         RatingScale::OutOfTen => "/10",
         RatingScale::Percent => "",
+    }
+}
+
+#[cfg(test)]
+mod airing_tests {
+    use super::{airing_line_in, footer_left_minutes_in, frac, left_in, phase, time_left_minutes_in, Airing, AiringPhase, Wall};
+    use plx_os::i18n::{LocaleContext, Preference};
+
+    /// English on a 24-hour television clock, whatever this host's own locale says.
+    fn en24() -> LocaleContext { LocaleContext::resolve(Preference::En, None, None, Some("24"), None) }
+
+    /// 2026-11-25 21:00:00 UTC.
+    const NINE_PM: i64 = 1_795_640_400;
+    const MIN: i64 = 60;
+
+    fn at(now: i64, offset: i64) -> Wall { Wall::from_secs(now, i32::try_from(offset).unwrap()) }
+
+    fn line(surface: Airing, begin: i64, end: i64, now: i64, offset: i64) -> Option<String> {
+        airing_line_in(&en24(), surface, begin, end, at(now, offset))
+    }
+
+    #[test]
+    fn the_tile_caption_counts_from_the_start_for_ten_minutes_then_reads_the_clock() {
+        let (begin, end) = (NINE_PM, NINE_PM + 82 * MIN);
+        for (after, want) in [
+            (0, "Started 0 min ago \u{b7} 1h 22m left"),
+            (1, "Started 1 min ago \u{b7} 1h 21m left"),
+            (10, "Started 10 min ago \u{b7} 1h 12m left"),
+            (11, "21:00\u{2013}22:22 \u{b7} 1h 11m left"),
+            (60, "21:00\u{2013}22:22 \u{b7} 22m left"),
+        ] {
+            assert_eq!(line(Airing::Tile, begin, end, begin + after * MIN, 0).as_deref(), Some(want), "{after} min in");
+        }
+        // The seconds of the tenth minute still read as ten; the eleventh is the clock.
+        assert_eq!(line(Airing::Tile, begin, end, begin + 10 * MIN + 59, 0).as_deref(), Some("Started 10 min ago \u{b7} 1h 12m left"));
+    }
+
+    #[test]
+    fn the_banner_line_says_when_it_started_and_then_how_long_is_left() {
+        let (begin, end) = (NINE_PM + 37 * MIN, NINE_PM + 99 * MIN);
+        for (after, want) in [
+            (0, "21:37\u{2013}22:39 \u{b7} Started 0 min ago"),
+            (1, "21:37\u{2013}22:39 \u{b7} Started 1 min ago"),
+            (10, "21:37\u{2013}22:39 \u{b7} Started 10 min ago"),
+            (11, "21:37\u{2013}22:39 \u{b7} 51m left"),
+        ] {
+            assert_eq!(line(Airing::Banner, begin, end, begin + after * MIN, 0).as_deref(), Some(want), "{after} min in");
+        }
+        let (begin, end) = (NINE_PM, NINE_PM + 60 * MIN);
+        assert_eq!(line(Airing::Banner, begin, end, begin + 38 * MIN, 0).as_deref(), Some("21:00\u{2013}22:00 \u{b7} 22m left"));
+    }
+
+    #[test]
+    fn time_left_is_hours_and_minutes_from_an_hour_and_whole_minutes_rounded_up_below_it() {
+        let cx = en24();
+        let (begin, end) = (NINE_PM - 120 * MIN, NINE_PM + 3_600);
+        let left = |now: i64| left_in(&cx, begin, end, at(now, 0));
+        assert_eq!(left(end - 22 * MIN).as_deref(), Some("22m left"));
+        assert_eq!(left(end - 22 * MIN + 1).as_deref(), Some("22m left"), "rounded up to the next minute");
+        assert_eq!(left(end - 60 * MIN).as_deref(), Some("1h 0m left"));
+        assert_eq!(left(end - 61 * MIN).as_deref(), Some("1h 1m left"));
+        assert_eq!(left(end - 1).as_deref(), Some("1m left"));
+        assert_eq!(left(end), None, "nothing is left of a programme at its end");
+        assert_eq!(left(end + 5), None);
+        assert_eq!(left(begin - 5), None, "nothing is left of a programme that has not begun");
+        // The airing the guide does not have has no time left either, whatever the clock says.
+        for (begin, end) in [(0, end), (end, end), (end + 1, end), (begin, 0)] {
+            assert_eq!(left_in(&cx, begin, end, at(NINE_PM, 0)), None, "{begin}..{end}");
+        }
+    }
+
+    /// The "left" part sits after a middle dot, so it is the language's footer wording
+    /// (`core.footer_left_*`), not the sentence-initial caption wording ("Noch 22 min", "Осталось 22 мин"),
+    /// in every shipped language: the tail of the line is that locale's `footer_left` for the same minutes,
+    /// and differs from `time_left` wherever the two wordings differ.
+    #[test]
+    fn the_left_part_after_the_dot_is_the_footer_wording_of_each_language() {
+        let (begin, end) = (NINE_PM, NINE_PM + 82 * MIN);
+        let mut differing = 0;
+        for pref in plx_os::i18n::SHIPPED {
+            let tag = pref.tag();
+            let cx = LocaleContext::resolve(pref, None, None, Some("24"), None);
+            // (surface, minutes into the airing, minutes still left)
+            for (surface, into, left) in [(Airing::Tile, 2, 80), (Airing::Tile, 60, 22), (Airing::Banner, 21, 61)] {
+                let line = airing_line_in(&cx, surface, begin, end, at(begin + into * MIN, 0)).expect(tag);
+                let tail = line.rsplit_once(" \u{b7} ").map(|(_, tail)| tail).unwrap_or_else(|| panic!("{tag}: no dot in {line:?}"));
+                assert_eq!(tail, footer_left_minutes_in(&cx, left), "{tag}: {surface:?} {into} min in: {line:?}");
+                let caption = time_left_minutes_in(&cx, left);
+                if caption != tail {
+                    differing += 1;
+                    assert!(!line.ends_with(&caption), "{tag}: {line:?} ends in the caption wording {caption:?}");
+                }
+            }
+        }
+        assert!(differing > 0, "no shipped language words the footer differently from the caption: the test would pin nothing");
+    }
+
+    /// The footer wording itself, pinned for the two languages whose caption form differs most from it.
+    #[test]
+    fn the_footer_wording_of_german_and_russian_is_pinned() {
+        let (begin, end) = (NINE_PM, NINE_PM + 82 * MIN);
+        for (tag, started, minutes, hours) in [
+            ("de", "Vor 2 Min. gestartet \u{b7} noch 1 Std. 20 Min.", "21:00\u{2013}22:22 \u{b7} noch 22 Min.", "21:00\u{2013}22:22 \u{b7} noch 1 Std. 1 Min."),
+            ("ru", "Началось 2 мин назад \u{b7} осталось 1 ч 20 мин", "21:00\u{2013}22:22 \u{b7} осталось 22 мин", "21:00\u{2013}22:22 \u{b7} осталось 1 ч 1 мин"),
+        ] {
+            let pref = plx_os::i18n::SHIPPED.into_iter().find(|l| l.tag() == tag).expect(tag);
+            let cx = LocaleContext::resolve(pref, None, None, Some("24"), None);
+            assert_eq!(airing_line_in(&cx, Airing::Tile, begin, end, at(begin + 2 * MIN, 0)).as_deref(), Some(started), "{tag}");
+            assert_eq!(airing_line_in(&cx, Airing::Tile, begin, end, at(begin + 60 * MIN, 0)).as_deref(), Some(minutes), "{tag}");
+            assert_eq!(airing_line_in(&cx, Airing::Banner, begin, end, at(begin + 21 * MIN, 0)).as_deref(), Some(hours), "{tag}");
+        }
+    }
+
+    #[test]
+    fn a_programme_that_is_over_is_not_just_started_and_one_not_yet_begun_has_nothing_left() {
+        // A five-minute programme seven minutes after it began is over, not "Started 7 min ago".
+        let (begin, end) = (NINE_PM, NINE_PM + 5 * MIN);
+        for surface in [Airing::Tile, Airing::Banner] {
+            assert_eq!(line(surface, begin, end, begin + 7 * MIN, 0).as_deref(), Some("21:00\u{2013}21:05"), "{surface:?} over");
+            // Before it starts there is no "left": the clock range alone, not "1h 10m left".
+            let (begin, end) = (NINE_PM + 10 * MIN, NINE_PM + 80 * MIN);
+            assert_eq!(line(surface, begin, end, NINE_PM, 0).as_deref(), Some("21:10\u{2013}22:20"), "{surface:?} upcoming");
+        }
+    }
+
+    #[test]
+    fn at_the_end_the_line_is_the_clock_alone() {
+        let (begin, end) = (NINE_PM, NINE_PM + 3_600);
+        for surface in [Airing::Tile, Airing::Banner] {
+            assert_eq!(line(surface, begin, end, end, 0).as_deref(), Some("21:00\u{2013}22:00"), "{surface:?}");
+            assert_eq!(line(surface, begin, end, end + 30, 0).as_deref(), Some("21:00\u{2013}22:00"), "{surface:?}");
+        }
+    }
+
+    #[test]
+    fn an_airing_the_guide_does_not_have_has_no_line_and_no_fraction() {
+        for (begin, end) in [(0, 0), (NINE_PM, 0), (0, NINE_PM), (NINE_PM, NINE_PM), (NINE_PM + 60, NINE_PM)] {
+            for surface in [Airing::Tile, Airing::Banner] {
+                assert_eq!(line(surface, begin, end, NINE_PM + 5, 0), None, "{begin}..{end}");
+            }
+            assert_eq!(frac(begin, end, at(NINE_PM + 5, 0)), None, "{begin}..{end}");
+        }
+    }
+
+    #[test]
+    fn the_clock_is_the_published_offset_across_midnight_in_both_directions() {
+        // 2026-11-25 23:30:00 UTC, an hour long.
+        let begin = NINE_PM + 150 * MIN;
+        let end = begin + 3_600;
+        let now = begin + 30 * MIN;
+        assert_eq!(line(Airing::Banner, begin, end, now, 3_600).as_deref(), Some("00:30\u{2013}01:30 \u{b7} 30m left"), "UTC+1 reads past midnight");
+        assert_eq!(line(Airing::Banner, begin, end, now, 0).as_deref(), Some("23:30\u{2013}00:30 \u{b7} 30m left"), "the airing itself crosses midnight");
+        assert_eq!(line(Airing::Banner, begin, end, now, -6 * 3_600).as_deref(), Some("17:30\u{2013}18:30 \u{b7} 30m left"));
+        // Before the epoch's first midnight the day count is negative; the clock still reads right.
+        assert_eq!(line(Airing::Banner, 3_600, 7_200, 5_000, -2 * 3_600).as_deref(), Some("23:00\u{2013}00:00 \u{b7} 37m left"));
+        // A half-hour zone.
+        assert_eq!(line(Airing::Banner, begin, end, now, 19_800).as_deref(), Some("05:00\u{2013}06:00 \u{b7} 30m left"));
+    }
+
+    #[test]
+    fn the_fraction_is_how_far_into_the_airing_now_is_and_stays_in_range() {
+        let (begin, end) = (NINE_PM, NINE_PM + 3_600);
+        let frac = |now: i64| frac(begin, end, at(now, 0));
+        assert_eq!(frac(begin), Some(0.0));
+        assert_eq!(frac(begin + 900), Some(0.25));
+        assert_eq!(frac(end), Some(1.0));
+        assert_eq!(frac(begin - 100), Some(0.0), "before it starts");
+        assert_eq!(frac(end + 100), Some(1.0), "after it ends");
+    }
+
+    #[test]
+    fn every_shipped_language_words_the_line_and_keeps_its_own_left() {
+        for language in plx_os::i18n::SHIPPED {
+            let _g = plx_os::i18n::language_on_this_thread_for_test(language);
+            let tag = language.tag();
+            let (begin, end) = (NINE_PM, NINE_PM + 3_600);
+            let started = super::airing_line(Airing::Tile, begin, end, at(begin + 2 * MIN, 0)).expect(tag);
+            assert!(started.contains(" \u{b7} ") && !started.contains('{'), "{tag}: {started:?}");
+            assert!(started.contains('2'), "{tag}: the minutes are said: {started:?}");
+            let later = super::airing_line(Airing::Banner, begin, end, at(begin + 38 * MIN, 0)).expect(tag);
+            assert!(later.ends_with(&super::left(begin, end, at(begin + 38 * MIN, 0)).unwrap()), "{tag}: {later:?}");
+        }
+    }
+
+    #[test]
+    fn the_clock_hour_and_minute_follow_the_offset_across_midnight_and_the_epoch() {
+        assert_eq!(super::clock_hm(NINE_PM, 0), Some([21, 0]));
+        assert_eq!(super::clock_hm(NINE_PM + 150 * MIN, 3_600), Some([0, 30]));
+        assert_eq!(super::clock_hm(NINE_PM, 19_800), Some([2, 30]));
+        assert_eq!(super::clock_hm(5_000, -2 * 3_600), Some([23, 23]), "before the first midnight");
+        assert_eq!(super::clock_hm(i64::MAX, 1), None);
+    }
+
+    #[test]
+    fn the_phase_is_decided_over_before_just_started_and_names_each_case() {
+        let (begin, end) = (NINE_PM, NINE_PM + 82 * MIN);
+        assert_eq!(phase(begin, end, begin - 30), AiringPhase::Upcoming { starts_in: 30 });
+        assert_eq!(phase(begin, end, begin), AiringPhase::JustStarted { minutes: 0, left: 82 });
+        assert_eq!(phase(begin, end, begin + 10 * MIN + 59), AiringPhase::JustStarted { minutes: 10, left: 72 });
+        assert_eq!(phase(begin, end, begin + 11 * MIN), AiringPhase::Running { left: 71 });
+        assert_eq!(phase(begin, end, end - 1), AiringPhase::Running { left: 1 });
+        assert_eq!(phase(begin, end, end), AiringPhase::Over);
+        // A programme shorter than the just-started window is over before the window is.
+        assert_eq!(phase(begin, begin + 5 * MIN, begin + 3 * MIN), AiringPhase::JustStarted { minutes: 3, left: 2 });
+        assert_eq!(phase(begin, begin + 5 * MIN, begin + 7 * MIN), AiringPhase::Over);
+        for (begin, end) in [(0, end), (end, end), (end + 1, end)] {
+            assert_eq!(phase(begin, end, NINE_PM), AiringPhase::Unknown, "{begin}..{end}");
+        }
+    }
+
+    #[test]
+    fn the_stamp_moves_with_what_the_line_says_and_not_otherwise() {
+        let (begin, end) = (NINE_PM, NINE_PM + 82 * MIN);
+        let stamp = |now: i64| phase(begin, end, now).stamp();
+        assert_eq!(stamp(begin - 5), stamp(begin - 500), "an upcoming airing's words wait for its start");
+        assert_ne!(stamp(begin - 5), stamp(begin));
+        assert_ne!(stamp(begin), stamp(begin + MIN), "the started minutes change");
+        assert_eq!(stamp(begin + 1), stamp(begin + 2), "within the minute nothing does");
+        assert_ne!(stamp(begin + 11 * MIN), stamp(begin + 12 * MIN), "the minutes left change");
+        assert_ne!(stamp(begin + 10 * MIN), stamp(begin + 11 * MIN), "just started becomes running");
+        assert_ne!(stamp(end - 1), stamp(end));
+        assert_eq!(stamp(end), stamp(end + 100));
+        assert_ne!(phase(0, 0, NINE_PM).stamp(), stamp(end));
     }
 }

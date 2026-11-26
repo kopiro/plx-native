@@ -1,23 +1,25 @@
-//! **Play Version** — the Detail hero's list of a movie's or episode's versions, opened by the
-//! Play Version disc.
+//! **Select Version** — the Detail hero's list of a movie's or episode's versions, opened by the
+//! Select Version disc.
 //!
 //! A `Style::Compact` surface anchored to the disc that opened it, the *Also available* panel's
 //! shape (`screens::alt_sources`): the anchor rides on [`VersionsArg`], the surface owns input
-//! while it is up, and it REPORTS the choice. A row delivers [`AppMsg::PlayVersion`] to the Detail
-//! instance named on its argument and the PAGE plays it, the way its Play pill does (resuming), so
-//! "what Play means on this page" stays in one place.
+//! while it is up, and it REPORTS the choice. A row delivers [`AppMsg::SelectVersion`] to the Detail
+//! instance named on its argument and the PAGE records it as the file its Play and Resume start; the
+//! row plays nothing, and the check mark moves to it. So "what Play means on this page" stays in one
+//! place.
 //!
 //! The rows are `plx_appkit::version_list`, the same builder the item menu's Play Version page
 //! draws, captured when the panel opens: a refetch landing behind an open list does not move a
-//! row under the cursor. It opens on the version Play takes unasked, the server's first
-//! (`plx_plex::plex::Metadata::media_version(None)`).
+//! row under the cursor. It opens on the row that wears the check mark, the version Play takes now
+//! (the viewer's choice, else what plays unasked).
 
 use std::borrow::Cow;
 use std::convert::Infallible;
 
 use plx_data::pms::MediaVersion;
 use plx_plex::plex::{MediaId, ServerId};
-use crate::registry::{AppLike, AppMsg, PageMemory};
+use crate::registry::{AppLike, AppMsg, MetadataLike, PageMemory};
+use plx_ui::a11y::{A11y, A11yPath};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind,
@@ -81,11 +83,20 @@ pub struct VersionsPanelScreen {
 }
 
 impl VersionsPanelScreen {
-    pub fn new(entry: EntryId, arg: VersionsArg, versions: &[MediaVersion]) -> Self {
+    /// `checked` is the version Play takes now: it wears the check mark and the list opens on it
+    /// (else on the first row). `can_play` is whether the platform composed any playback driver
+    /// (`ScreenInputs::can_play`): without one every row is disabled and says why, and presses
+    /// nothing.
+    pub fn new(entry: EntryId, arg: VersionsArg, versions: &[MediaVersion], checked: Option<MediaId>, can_play: bool) -> Self {
         let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         // rows carry a sub-line: the track menu's size class
         form.table.compact = false;
-        form.set(Form::new().section(plx_appkit::version_list::section(versions, VersionRow, |v| v.id)), Some(&VersionRow(0)));
+        let unavailable = (!can_play).then(plx_os::i18n::msg::browse_detail_no_playback);
+        let opening = checked.and_then(|id| versions.iter().position(|v| v.id == id)).unwrap_or(0);
+        form.set(
+            Form::new().section(plx_appkit::version_list::section(versions, VersionRow, |v| v.id, checked, unavailable)),
+            Some(&VersionRow(opening as u16)),
+        );
         Self { entry, arg, versions: versions.iter().map(|v| v.id).collect(), form }
     }
 
@@ -99,10 +110,16 @@ impl VersionsPanelScreen {
         fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
     }
 
-    /// Close, and report row `elem`'s version to the page. Takes the elem, not the cursor: a click
-    /// names the stop it hit (`AltSourcesScreen::commit`).
+    /// Close, and report row `elem`'s version to the page, which selects it. Takes the elem, not the cursor: a click
+    /// names the stop it hit (`AltSourcesScreen::commit`). OK on a DISABLED row (no playback driver
+    /// composed) does nothing and the panel stays up, as on every disabled row (`ui/CLAUDE.md`: "OK
+    /// does nothing"); BACK still closes it.
     fn commit<H: AppLike>(&mut self, elem: u32, fx: &mut Effects<'_, H>) {
-        let media = match self.form.index_of_key(RowKey(elem)).and_then(|i| self.form.activate(i)) {
+        let activation = self.form.index_of_key(RowKey(elem)).map(|i| self.form.activate(i));
+        if matches!(activation, Some(None)) {
+            return;
+        }
+        let media = match activation.flatten() {
             Some(plx_ui::form::Activation::Action(media)) => Some(media),
             _ => None,
         };
@@ -110,7 +127,7 @@ impl VersionsPanelScreen {
         if let Some(media) = media {
             fx.push(Fx::Deliver(
                 MachineId::Instance(self.arg.host),
-                Delivery::Screen(ScreenEvent::App(AppMsg::PlayVersion(media))),
+                Delivery::Screen(ScreenEvent::App(AppMsg::SelectVersion(media))),
             ));
         }
     }
@@ -160,7 +177,7 @@ impl<H: AppLike<Memory = PageMemory>> Machine<H> for VersionsPanelScreen {
 }
 
 /// One column of `Bare` rows over the table's own cursor, *Also available*'s `Focusable`.
-impl<H: AppLike<Memory = PageMemory>> Focusable<H> for VersionsPanelScreen {
+impl<H: AppLike<Memory = PageMemory> + MetadataLike> Focusable<H> for VersionsPanelScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         out.push(GroupSpec {
             id: GroupId(0),
@@ -205,6 +222,38 @@ impl<H: AppLike<Memory = PageMemory>> Focusable<H> for VersionsPanelScreen {
             elem: self.form.selected_key().or_else(|| self.form.opening_key()).map_or(0, |k| k.0),
         }
     }
+
+    /// **Row `n` is `row.<n>`**, the shared table convention
+    /// ([`plx_ui::geom::table_a11y`]): `n` is the row's ordinal among the focusable rows (the same
+    /// count `GroupSpec::len` states), so a separator or note never shifts an id. The label is the
+    /// row's own text, for the state file only. The elements and the inverse are the shared ones.
+    ///
+    /// **A row selects for a title, so it names that title.** OK delivers `AppMsg::SelectVersion` to the page, which
+    /// records the version the row names for the hero's title, the one its Play pill plays: the subject is the Play pill's own
+    /// (`registry::versions_subject`: the page's loaded item, read from the metadata store the way the mount reads the
+    /// versions), so `versions.row.<n>` needs a press that names the title. The key is derived from `cx`, not kept on the
+    /// screen: it is no part of the screen's recorded state (`SHAPE`).
+    fn a11y(&self, elem: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let slot = self.form.index_of_key(RowKey(*elem))?;
+        let row = plx_ui::geom::table_a11y(&self.form.table, Some(&self.form), slot)?;
+        Some(match crate::registry::versions_subject(cx, &self.arg) {
+            Some(rk) => row.with_subject(rk),
+            None => row,
+        })
+    }
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == GroupId(0) {
+            out.extend(
+                plx_ui::geom::table_elems(&self.form.table, Some(&self.form))
+                    .filter_map(|i| self.form.key_at(i))
+                    .map(|k| k.0),
+            );
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, _cx: &Cx<'_, H>) -> Option<u32> {
+        let slot = plx_ui::geom::table_a11y_find(&self.form.table, Some(&self.form), path)?;
+        self.form.key_at(slot).map(|k| k.0)
+    }
 }
 
 impl LogicalState for VersionsPanelScreen {
@@ -222,7 +271,7 @@ impl LogicalState for VersionsPanelScreen {
     }
 }
 
-impl<H: AppLike<Memory = PageMemory>> Screen<H> for VersionsPanelScreen {
+impl<H: AppLike<Memory = PageMemory> + MetadataLike> Screen<H> for VersionsPanelScreen {
     fn name(&self) -> &'static str {
         "versions"
     }
@@ -284,7 +333,7 @@ impl<H: AppLike<Memory = PageMemory>> Screen<H> for VersionsPanelScreen {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use plx_machine::machine::Host;
     use plx_ui::screen::ScreenArg;
@@ -320,13 +369,124 @@ mod tests {
         type Memory = PageMemory;
     }
 
+    thread_local! {
+        // TEST ONLY: the page a panel reads its subject off, as `screens::detail::tests`'s `TEST_METADATA`.
+        static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
+    }
+    fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+    impl MetadataLike for HostFixture {
+        fn metadata<'a>(_cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> {
+            test_store().view()
+        }
+    }
+    /// Make `d` the page the metadata store holds (or none), and keep the shared store to this test.
+    fn page(d: Option<plx_data::metadata::Detail>) -> plx_base::testlock::Serial {
+        let guard = plx_base::testlock::serial();
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), d);
+        guard
+    }
+
     fn panel() -> VersionsPanelScreen {
         let anchor = [500.0f32, 600.0, 64.0, 64.0].map(f32::to_bits);
         VersionsPanelScreen::new(
             EntryId(3),
             VersionsArg { host: InstanceId(9), sid: ServerId::from_raw(1), rk: "42".into(), anchor },
             &plx_appkit::version_list::sample(),
+            None,
+            true,
         )
+    }
+
+    fn cx() -> Cx<'static, HostFixture> {
+        use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
+        Cx {
+            views: (),
+            tick: Tick::default(),
+            measure: &plx_ui::fixture::FixtureMeasure,
+            focus: FocusRead::default(),
+            press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
+            owner: InputOwner::Entry(EntryId(3)),
+        }
+    }
+
+    /// The *Play Version* list over the sample versions, run through the id conformance
+    /// (`AppArg::VersionsPanel`; the coverage table calls this).
+    pub(crate) fn versions_panel_conforms() -> plx_ui::a11y::Namespaces {
+        vec![plx_ui::a11y::conform::<HostFixture, _>(&panel(), &cx())]
+    }
+
+    /// Every version is a row with an id, `row.<n>` in the server's order, and the id finds it
+    /// again.
+    #[test]
+    fn every_version_answers_an_id_in_the_servers_order() {
+        let p = panel();
+        let cx = cx();
+        plx_ui::a11y::conform::<HostFixture, _>(&p, &cx);
+        let n = plx_appkit::version_list::sample().len();
+        assert!(n >= 2, "the sample has several versions");
+        for i in 0..n {
+            let path = plx_ui::a11y::A11yPath::parse_relative(&format!("row.{i}")).expect("a well-formed path");
+            assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &path, &cx), Some(i as u32), "row.{i} is version {i}");
+        }
+        let past = plx_ui::a11y::A11yPath::parse_relative(&format!("row.{n}")).expect("a well-formed path");
+        assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &past, &cx), None);
+    }
+
+    fn row_subject(p: &VersionsPanelScreen, row: u32) -> Option<String> {
+        let cx = cx();
+        Focusable::<HostFixture>::a11y(p, &row, &cx)?.subject.map(Cow::into_owned)
+    }
+
+    /// **A row plays, so it names the title it plays** (`versions.row.<n>` is in `SUBJECT_BEARING`): the subject is
+    /// what the page's Play pill plays, the key `AppMsg::SelectVersion` acts on (`DetailScreen::select_version`), and not the
+    /// route's. A movie page plays itself; a show page plays the episode its hero plays, so the route's show key
+    /// would name the wrong title. With no page loaded (or another one) a row names none, and the guarded doors
+    /// cannot press it.
+    #[test]
+    fn a_row_names_the_title_its_page_plays() {
+        use plx_data::metadata::{Detail, Episode};
+        let sid = ServerId::from_raw(1);
+        let p = panel();
+        {
+            let _guard = page(Some(Detail { sid, rk: "42".into(), kind: "movie".into(), ..Default::default() }));
+            for row in 0..plx_appkit::version_list::sample().len() as u32 {
+                assert_eq!(row_subject(&p, row).as_deref(), Some("42"), "row {row} plays the movie");
+            }
+        }
+        {
+            let episode = Episode { rk: "e1".into(), index: 1, season: 1, ..Default::default() };
+            let _guard = page(Some(Detail {
+                sid, rk: "42".into(), kind: "show".into(), is_show: true, episodes: vec![episode].into(), ..Default::default()
+            }));
+            assert_eq!(row_subject(&p, 0).as_deref(), Some("e1"), "a show's rows play the hero's episode, not the show");
+        }
+        {
+            let _guard = page(Some(Detail { sid, rk: "another".into(), kind: "movie".into(), ..Default::default() }));
+            assert_eq!(row_subject(&p, 0), None, "another page is loaded: the panel names no title");
+        }
+        let _guard = page(None);
+        assert_eq!(row_subject(&p, 0), None, "no page loaded");
+    }
+
+    /// The version Play takes now wears the check mark and the list opens on it; with none named
+    /// the list opens on its first row and no row is marked.
+    #[test]
+    fn the_taken_version_wears_the_check_and_the_list_opens_on_it() {
+        let versions = plx_appkit::version_list::sample();
+        let anchor = [500.0f32, 600.0, 64.0, 64.0].map(f32::to_bits);
+        let arg = VersionsArg { host: InstanceId(9), sid: ServerId::from_raw(1), rk: "42".into(), anchor };
+        for (checked, marked, opening) in [(None, None, 0), (Some(versions[0].id), Some(0), 0), (Some(versions[1].id), Some(1), 1)] {
+            let p = VersionsPanelScreen::new(EntryId(3), arg.clone(), &versions, checked, true);
+            let rows: Vec<_> = p.form.table.sections.iter().flat_map(|s| s.rows.iter()).filter(|r| !r.is_note()).collect();
+            assert_eq!(rows.iter().position(|r| r.checked), marked, "{checked:?}");
+            assert_eq!(p.form.selected_key().map(|k| k.0), Some(opening), "{checked:?}: opens on the marked row");
+        }
+        let gone = VersionsPanelScreen::new(EntryId(3), arg, &versions, Some(MediaId(99)), true);
+        assert_eq!(gone.form.selected_key().map(|k| k.0), Some(0), "a version the list lacks opens on the first row");
     }
 
     /// OK on a row closes the panel and reports THAT version to the page that opened it.
@@ -341,9 +501,60 @@ mod tests {
         let fx: Vec<_> = out.into_iter().map(|e| e.fx).collect();
         assert!(matches!(fx.first(), Some(Fx::Nav(NavOp::Dismiss(EntryId(3))))), "the panel closes");
         let played = fx.iter().find_map(|f| match f {
-            Fx::Deliver(MachineId::Instance(InstanceId(9)), Delivery::Screen(ScreenEvent::App(AppMsg::PlayVersion(m)))) => Some(*m),
+            Fx::Deliver(MachineId::Instance(InstanceId(9)), Delivery::Screen(ScreenEvent::App(AppMsg::SelectVersion(m)))) => Some(*m),
             _ => None,
         });
         assert_eq!(played, Some(plx_appkit::version_list::sample()[1].id), "the host page is told which version");
+    }
+
+    /// A platform that composed no playback driver opens the same list with every row disabled and the
+    /// one reason noted under them (`browse.detail.no_playback`, the Detail facts line's own word): OK
+    /// on a row does nothing, as on every disabled row (`ui/CLAUDE.md`), so the panel stays up and
+    /// nothing is asked of a driver that is not there, while BACK still closes it.
+    #[test]
+    fn with_no_playback_driver_every_row_is_disabled_and_reports_nothing() {
+        use plx_machine::machine::{InputEvent, Source, Tick};
+        let _lang = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
+        let why = plx_os::i18n::msg::browse_detail_no_playback();
+        let anchor = [500.0f32, 600.0, 64.0, 64.0].map(f32::to_bits);
+        let arg = VersionsArg { host: InstanceId(9), sid: ServerId::from_raw(1), rk: "42".into(), anchor };
+        // What one event does to a panel: the effects it pushes.
+        let drive = |p: &mut VersionsPanelScreen, ev: ScreenEvent<HostFixture>| {
+            let mut out = Vec::new();
+            let mut present = plx_machine::present::Present::new();
+            let mut fx: Effects<'_, HostFixture> =
+                Effects::new(&mut out, MachineId::Instance(InstanceId(4)), &mut present);
+            Machine::<HostFixture>::step(p, &ev, &cx(), &mut fx);
+            out.into_iter().map(|e| e.fx).collect::<Vec<_>>()
+        };
+        let closes = |fx: &[Fx<HostFixture>]| fx.iter().any(|f| matches!(f, Fx::Nav(NavOp::Dismiss(EntryId(3)))));
+        let reports = |fx: &[Fx<HostFixture>]| fx.iter().any(|f| matches!(f,
+            Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(AppMsg::SelectVersion(_))))));
+        for (can_play, disabled) in [(true, false), (false, true)] {
+            let mut p = VersionsPanelScreen::new(EntryId(3), arg.clone(), &plx_appkit::version_list::sample(), None, can_play);
+            let rows: Vec<_> = p.form.table.sections.iter().flat_map(|s| s.rows.iter()).collect();
+            let versions: Vec<_> = rows.iter().filter(|row| !row.is_note()).collect();
+            let notes: Vec<_> = rows.iter().filter(|row| row.is_note()).collect();
+            assert_eq!(versions.len(), 2);
+            for row in versions {
+                assert_eq!(row.disabled, disabled, "can_play={can_play}");
+            }
+            assert_eq!(notes.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(),
+                disabled.then_some(why).into_iter().collect::<Vec<_>>(), "can_play={can_play}: the one note says why");
+            // OK, through the handler's own arm (`Activate`, what a click and the engine's OK deliver).
+            let ok = drive(&mut p, ScreenEvent::Activate(1));
+            assert_eq!((closes(&ok), reports(&ok)), (!disabled, !disabled),
+                "can_play={can_play}: OK on a row closes the panel and reports it only while the row is enabled");
+            if disabled {
+                assert!(ok.is_empty(), "OK on a disabled row does nothing at all, got {} effects", ok.len());
+            }
+            // BACK closes the panel whichever state it is in, and reports nothing.
+            let back = drive(&mut p, ScreenEvent::Input(InputEvent {
+                at: Tick::default(),
+                source: Source::Script,
+                kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+            }));
+            assert!(closes(&back) && !reports(&back), "can_play={can_play}: BACK closes the panel and plays nothing");
+        }
     }
 }

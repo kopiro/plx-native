@@ -217,15 +217,27 @@ fn a_detail_related_card_opens_its_menu_at_the_drawn_rect_and_other_shelves_open
 fn detail_more_opens_the_pages_delete_menu_even_with_a_next_up_episode() {
     let _guard = plx_base::testlock::serial();
     plx_plex::plex::reset_servers_for_test();
+    // Production latches the Dolby Vision diagnostics before the first frame; the page's per-frame
+    // version rule (`taken_version`) reads them.
+    plx_data::metadata::prewarm_dv_latches();
     let sid = plx_plex::plex::register_for_test("hero-more", "127.0.0.1", 9, "synthetic", "fixture");
     let mut d = Dispatcher::<AppHost>::new();
     let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
     let mut rig = owner.bridge();
     rig.retained.screen_inputs.deletable = std::sync::Arc::new(vec![(sid,
         plx_plex::plex::ClientKey { instance: 1, token: 2, grant: 3 })]);
+    // The hero's actions: the watch toggle, Play from Start (the episode is underway), and the two a
+    // show page offers for its on-deck episode, Select Version and Audio & Subtitles. Four are more
+    // than the round buttons hold (`hero::split_actions`), so the … opens a menu with the last two.
+    let version = |id: i64| plx_data::pms::MediaVersion { id: plx_plex::plex::MediaId(id), ..Default::default() };
     plx_data::metadata::set_current_for_test(rig.stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
         sid, rk: "show".into(), title: "Disposable show".into(), kind: "show".into(), is_show: true,
-        on_deck: Some(plx_data::metadata::Episode { rk: "on-deck".into(), resume_ms: 60_000, dur_ms: 120_000, ..Default::default() }),
+        on_deck: Some(plx_data::metadata::Episode {
+            rk: "on-deck".into(), resume_ms: 60_000, dur_ms: 120_000,
+            part: "/library/parts/1/1/file.mkv".into(), versions: vec![version(1), version(2)], ..Default::default()
+        }),
+        audio: vec![plx_data::metadata::Stream { id: 11, ..Default::default() }],
+        episode_streams: plx_data::metadata::EpisodeStreams::Loaded("on-deck".into()),
         ..Default::default()
     }));
     d.request(MachineId::Nav, NavOp::Root(AppArg::Content(ContentArg::Detail { sid, rk: "show".into() })));
@@ -237,7 +249,8 @@ fn detail_more_opens_the_pages_delete_menu_even_with_a_next_up_episode() {
         rig.content_menu_arg(&d, entry, &ret).filter(|arg| matches!(arg.kind, ItemMenuKind::Detail { .. }))
     }).expect("More opens the page's deletion menu");
     assert_eq!(arg.rk, "show");
-    assert!(matches!(arg.kind, ItemMenuKind::Detail { kind: 1, .. }));
+    assert!(matches!(arg.kind, ItemMenuKind::Detail { kind: 1, rows, .. }
+        if rows[..] == [plx_screens::registry::HeroCtl::Version, plx_screens::registry::HeroCtl::AudioSubtitles]));
     assert!(!arg.loaded_episode, "deletion addresses the show, independently of its next-up episode");
     plx_plex::plex::reset_servers_for_test();
 }

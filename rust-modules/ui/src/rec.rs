@@ -7,8 +7,8 @@
 //! (an adapter result's address and payload or blob hash), `land` (how many landings a STORE
 //! consumed on this frame — the schedule `plx_machine::landgate` holds a replay to), `life`, `timer`, `st`
 //! (the logical-state hash, on every EVENT frame), plus schema-3 `metrics` typed measurement
-//! records, pointwise `rs` Focus/Hit resolutions and exactly one final `fo` product-focus
-//! observation per frame. The
+//! records, pointwise `rs` resolutions (Focus, Hit and Id: three families) and exactly one final
+//! `fo` product-focus observation per frame. The
 //! header carries `schema`,
 //! `state_fp`, the build, the features, the armed triggers, `init` (the application's initial
 //! conditions, `H::Init`) and the clock origin.
@@ -252,7 +252,14 @@ fn bounded_read(path: &Path, remaining: usize) -> Result<Vec<u8>, RecError> {
 /// Generic typed-initial input transport, with exactly the recording reader's bounds and JSON
 /// integrity checks. Application decoding happens afterwards and never reads a fallback file.
 pub fn initial_value(path: &Path) -> Result<Value, RecError> {
-    strict_json::decode(&bounded_read(path,DATA_CAP_BYTES)?).map_err(|_| malformed(0,"initial JSON"))
+    initial_from_bytes(&bounded_read(path,DATA_CAP_BYTES)?)
+}
+
+/// [`initial_value`] over bytes the caller already holds (a platform's preset table instead of a file): the same
+/// size bound and the same strict JSON decode.
+pub fn initial_from_bytes(bytes: &[u8]) -> Result<Value, RecError> {
+    if bytes.len() > DATA_CAP_BYTES { return Err(RecError::RecordingTooLarge { limit:CAP_BYTES }); }
+    strict_json::decode(bytes).map_err(|_| malformed(0,"initial JSON"))
 }
 
 pub fn mode_value(path: &Path) -> Result<Option<String>, RecError> {
@@ -973,7 +980,7 @@ thread_local! {
 /// Detail page is held as an image while the Down key focuses a cast card, and the Person page is
 /// pushed before any replacement capture draws that card, so the anchor never measured the focused
 /// caption the held-page walk warms. The pass itself draws nothing and decides nothing; replay
-/// still grades every frame's state hash, presents, effects, and Focus/Hit resolutions, so an
+/// still grades every frame's state hash, presents, effects, and Focus/Hit/Id resolutions, so an
 /// answer that leaked out of the pass into the product would diverge there, not pass silently.
 pub fn speculative<R>(pass: impl FnOnce() -> R) -> R {
     struct Restore(bool);
@@ -1209,6 +1216,20 @@ mod tests {
         }
     }
     use super::*;
+
+    /// A preset's text decodes exactly as the same bytes in a file do, under the same bound.
+    #[test]
+    fn an_initial_from_bytes_decodes_as_the_file_does_and_keeps_the_bound() {
+        let dir = std::env::temp_dir().join(format!("plx-initial-bytes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("initial.json");
+        let text = br#"{"a":1,"b":[true,null]}"#;
+        std::fs::write(&file, text).unwrap();
+        assert_eq!(initial_from_bytes(text).unwrap(), initial_value(&file).unwrap());
+        assert!(initial_from_bytes(b"{\"a\":1,\"a\":2}").is_err(), "the same strict decode: a repeated key is refused");
+        assert!(initial_from_bytes(&vec![b' '; DATA_CAP_BYTES + 1]).is_err(), "and the same size bound");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn decoded_budget_tracks_live_trees_not_discarded_scalar_rows() {

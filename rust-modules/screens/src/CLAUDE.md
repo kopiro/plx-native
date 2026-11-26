@@ -63,6 +63,21 @@ A screen mounted as a modal surface is the same trait with a different `Style`; 
 instantiates the same screens a second time for its own inner stack, which is how one
 `OnboardScreen` mounts twice (§6.2).
 
+## A page reports what it draws that changed under a cover
+
+A glass menu or Sheet freezes the page under it, and the host retakes that snapshot on typed page
+damage (`Present::page_damaged()`, read by `popover::host::begin_frame`; page motion also does once
+every surface is fading), the close's first frame included: a page that returns from under a cover (`Uncover`, `Enter(Restored)`, a focus
+restored onto the key it already holds) should raise none of its own, and one that does it
+unconditionally costs the close a dropped frame. So a page draws from a user setting only if it keeps the value it
+last drew from and compares it at the head of `step`, on whichever event comes first
+(`registry::moved(&mut self.field, now)`, then `fx.invalidate(Provenance::Nav)`): Home, Library,
+Recommended, the collection, person, Search, Detail and Watchlist pages do so for the Under posters
+policy (and Library's sort value line, the Continue Watching press the deck draws). A page that
+reads the catalog or a store compares its revision the same way (Home's `sync_catalog_changed`, the
+Watchlist's `rev`). The collection and person pages are not narrowed yet: both still damage on every
+`Uncover`/`Enter` (over-damage, safe: the host may retake their page when nothing changed).
+
 ## A landing must not move ground somebody is looking at
 
 The Library's seven reported bugs in 2026-09 had one cause, and the shape recurs on every screen
@@ -84,7 +99,22 @@ that mixes async content with a live cursor:
   block that lands late). A restore is only what the reader chose: the engine remembers
   the page's own seats too, so the page keeps their provenance (`LibraryScreen::placed`). Home already has this shape (the hero seats when its action row
   arrives, while focus is still on the strip); Search seats its field, which never arrives async,
-  and Person and Detail keep no self-seat for a landing to strand.
+  and Person keeps no self-seat for a landing to strand. Detail keeps none while a playback driver
+  is composed (Play is its first seat and the landing does not move it); with none composed its
+  first seat, before the item lands, is the watched toggle, which writes to the account once the
+  item is there. The page owns that seat the way the Library owns its grid's
+  (`DetailScreen::provisional`, set by a fresh open's `Enter`): every frame's `reconcile` answers
+  `DetailScreen::default_elem` until the viewer acts at it: a key that moves focus, the pointer
+  moving it, an activation (`activate`: OK or a click) on a landed page, a hold that opens the item
+  menu, or, once the item has landed and the page has placed its seat (focus is on `default_elem`),
+  any key-down, pointer, click, drag or wheel (the Library's rule, since a wheel or a hover on the
+  focused control moves no focus for a `FocusMoved` to report). The item's
+  landing, a later Also available landing and a restore that waits on a season or retires all move the
+  seat by that one rule, so account safety never depends on a restore firing in the landing frame.
+  Before the item lands, and in the landing frame before `reconcile` has moved focus off the toggle,
+  only a focus move ends it: an OK there would let its press commit on the watched toggle, so an OK,
+  a key that moves nothing, a wheel, a drag and a hover on the control already focused leave it the
+  page's.
 - **The grid absorbs an index landing, the page shifts its scroll.** The Library's grid is a
   `cards::Grid` in `ScrollMode::External`: when the focused element's index changes with no
   `FocusMoved` (an insert or reorder before it) the grid moves its pop with the element and
@@ -176,9 +206,9 @@ smallest worked example.
   `SectionSpec`s, in order), `fallback` (the order focus falls back through when a section empties)
   and `cards` (a section's `CardSource`, `None` while it has no content). Optional hooks: `pending`,
   `recover`, `card_has_menu`, `elem_of`, `plain_len`, `plain_elem`, `plain_step`, `focus_rect`,
-  `element_rect`, `seat_override`, `reveal_margin`, `shelf_foot`, `wide_extent`, `plain_group`,
+  `element_rect`, `seat_override`, `reveal_margin`, `shelf_foot`, `shelf_foot_open`, `reveal_foot`, `wide_extent`, `plain_group`,
   `reveal_with`, `draw_heading`, `custom_draw`. Stacked shelves are adjacent sections and the air
-  under one is its `shelf_foot` (Search, Person), never a `Custom` gap section between two: a shelf's
+  under one is its `shelf_foot` (Search, Person, Live TV), never a `Custom` gap section between two: a shelf's
   caption stops short of the next shelf's lifted heading, which `Stack` reads off the section that follows.
 - Hold the `Stack` in the screen, feed it every event with `stack.on(&page, ev, cx, fx)` and draw
   through `stack.view(&page)`. Get `Focusable` from `plx_ui::focusable_via_view!`
@@ -266,7 +296,16 @@ episode view's cards are 4 columns wide, wider than a poster, so no value gains 
 input, not a read:** a screen reads no clock and fetches no date; the application's loop publishes the
 calendar date once per frame (`Bridge::publish_today`, read from the platform at most once a minute through
 `app::clock::today`, the loop its one caller) and `LibraryLike::today` hands it in from the frame's views,
-and `CaptionCache` keys its labels on it so "Today" rebuilds at midnight. The Under posters page's picture
+and `CaptionCache` keys its labels on it so "Today" rebuilds at midnight. **The time of day is the same kind of
+input:** the loop publishes one clock reading per frame, the wall-clock instant and the zone's UTC offset at it
+(`Bridge::publish_clock`, from `app::clock::reading`, whose date and offset are ONE per-minute zone read; the offset
+is absent where the zone cannot be read, and then there is no `Wall`, while the Live TV store still takes its `now` from
+the same instant), a page receives the `Wall` as `LiveTvLike::wall`, the player on `HudModel::wall` (the app's `hud_model` copies the published wall into
+the model it sends, so the screen has no second route to it), and every clock face, "22m left" and progress fraction is derived from them by the pure
+`plx_ui::fmt::airing_line` / `left` / `frac` (each takes the `Wall`, and decides through `plx_ui::fmt::phase`; `None`
+under a replay: no clock face, never a guessed one). **The words are never cached in a published fact:** the player's
+live info keeps the guide's raw begin and end and the HUD words the airing at draw, with the screen's
+`clock_fingerprint` following the airing's phase stamp so a frame is owed when the minute turns. The Under posters page's picture
 illustrates the mode as a library sorted by Year while the Sort value row has focus: each sample's own year
 (through `registry::sort_info::year_value`, the Year sort's own wording) replaces its caption lines (`RootPicture::sorted`; the details pickers never preview it). The picture never adds sort choices.
 

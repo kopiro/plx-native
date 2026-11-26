@@ -54,9 +54,10 @@ pub struct Shelf {
     /// By value ([`RowStyle`] is `Copy`): a strip's cards may be sized at runtime, by a HUD package.
     style: RowStyle,
     row: CardRow,
-    /// What the `FocusMoved`s since the last tick said: a deliberate move (`By::Dir` /
-    /// `By::Pointer`) grows its cell from rest, any other arrival is adopted at full pop, and none
-    /// at all means a changed focused index is a content landing. Cleared by the tick.
+    /// What the `FocusMoved`s since the last tick said: a deliberate move (a key, a hover or a by-id
+    /// jump: `By::Dir`, `By::Pointer`, `By::Script`; see `Seen::of`) grows its cell from rest, any
+    /// other arrival is adopted at full pop, and none at all means a changed focused index is a
+    /// content landing. Cleared by the tick.
     seen: Seen,
     /// The landing the last tick carried the focused pop through, if there was one.
     landed: Option<Landed>,
@@ -312,7 +313,7 @@ impl Shelf {
                 let arrived = (to.entry == self.entry).then(|| here(&to.elem)).flatten();
                 // the reader has moved on from what the page returned with: a deliberate move, or
                 // focus gone from this shelf's cards (a header control, another shelf)
-                if arrived.is_none() || matches!(by, By::Dir | By::Pointer) {
+                if arrived.is_none() || matches!(by, By::Dir | By::Script | By::Pointer) {
                     self.returning = false;
                 }
                 if let Some(a) = arrived {
@@ -712,8 +713,8 @@ impl Shelf {
             if !src.loaded(i) {
                 continue;
             }
-            let Some((srv, path, w, h)) = crate::widgets::card_art_request(&src.art(i)) else { continue };
-            if crate::tex::warm_ahead_on(srv, path, w, h, false) != crate::tex::Warm::Known {
+            let Some(q) = crate::widgets::card_art_request(&src.art(i)) else { continue };
+            if crate::tex::warm_ahead_on(q.srv, q.path, q.w, q.h, q.png) != crate::tex::Warm::Known {
                 // claimed (the next tick finds it held and goes on) or refused (try again there)
                 self.warm.walk = Some((key, at));
                 return;

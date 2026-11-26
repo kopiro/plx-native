@@ -21,12 +21,12 @@ use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::widgets::CircleButton;
 use plx_ui::{theme, Rect};
 
-/// Maximum row: Play, bookmark, Go to Show, Version, Restart, Trailer, Alt, watch face and More.
-pub const MAX_CTLS: usize = 9;
+/// Maximum row: Play, bookmark, Go to Show, Version, Audio & Subtitles, Restart, Trailer, Alt, watch face and More.
+pub const MAX_CTLS: usize = 10;
 
 /// How many of the row's controls are discs that unfurl to a verb on focus: Restart, Trailer, the
-/// watch toggle, Play Version and Go to Show (the bookmark disc never unfurls).
-pub const DISCS: usize = 5;
+/// watch toggle, Play Version, Go to Show and Audio & Subtitles (the bookmark disc never unfurls).
+pub const DISCS: usize = 6;
 
 /// The Play/Resume pill's minimum width: a pathologically short label still gets a pill.
 pub const PW: f32 = theme::hero::PLAY_MIN_W;
@@ -71,9 +71,9 @@ pub fn pill_w(measure: &dyn Measure, label: &CStr, sz: i32, icon: bool, trailing
 /// Shared by the Detail hero and card menu, and by Home when it has no resume duration to show.
 pub fn play_label(resumes: bool) -> &'static CStr {
     if resumes {
-        plx_platform::i18n::msg::browse_detail_resume_c()
+        plx_os::i18n::msg::browse_detail_resume_c()
     } else {
-        plx_platform::i18n::msg::browse_detail_play_c()
+        plx_os::i18n::msg::browse_detail_play_c()
     }
 }
 
@@ -85,9 +85,9 @@ pub fn play_width(measure: &dyn Measure, label: &CStr) -> f32 {
 /// [`play_label`] as text, for the rows that take a `&str`.
 pub fn play_text(resumes: bool) -> &'static str {
     if resumes {
-        plx_platform::i18n::msg::browse_detail_resume()
+        plx_os::i18n::msg::browse_detail_resume()
     } else {
-        plx_platform::i18n::msg::browse_detail_play()
+        plx_os::i18n::msg::browse_detail_play()
     }
 }
 
@@ -199,7 +199,7 @@ pub fn time_facts(year: i64, aired: &str, episode: bool, dur_ms: i64, resume_ms:
     let length = (dur_ms >= 60_000).then(|| {
         if resumes {
             let left = dur_ms.saturating_sub(resume_ms);
-            if left < 3_600_000 { plx_platform::i18n::msg::browse_detail_minutes_left((left / 60_000).max(1)) }
+            if left < 3_600_000 { plx_os::i18n::msg::browse_detail_minutes_left((left / 60_000).max(1)) }
             else { plx_ui::fmt::time_left(left) }
         } else { plx_ui::fmt::duration(dur_ms) }
     });
@@ -214,9 +214,9 @@ pub fn meta_facts(d: &Detail, episode: Option<&Episode>) -> (String, Option<Stri
     let facts = time_facts(d.year, &d.aired, d.kind == "episode", d.dur_ms, d.resume_ms);
     if !d.is_show || d.seasons.is_empty() { return facts; }
     let episodes: i64 = d.seasons.iter().map(|season| season.leaf_count).sum();
-    let seasons = plx_platform::i18n::msg::browse_detail_seasons(d.seasons.len() as i64);
+    let seasons = plx_os::i18n::msg::browse_detail_seasons(d.seasons.len() as i64);
     let extent = if episodes > 0 {
-        plx_platform::i18n::msg::browse_detail_extent(&plx_platform::i18n::msg::browse_detail_episodes(episodes), &seasons)
+        plx_os::i18n::msg::browse_detail_extent(&plx_os::i18n::msg::browse_detail_episodes(episodes), &seasons)
     } else { seasons };
     (facts.0, Some(extent))
 }

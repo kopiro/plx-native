@@ -481,7 +481,7 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
         let mut page = fixture.screen();
         tick(&mut page, &fixture, None);
         let (shown, glyph, plain_row, caption) = read(&page, &fixture);
-        let shared = plx_platform::i18n::msg::browse_library_shared_unreachable("friend");
+        let shared = plx_os::i18n::msg::browse_library_shared_unreachable("friend");
         assert_eq!(shown.as_ref().and_then(|r| r.to_str().ok()), (!owner.is_empty()).then_some(shared.as_str()),
             "no fact: today's read-out");
         assert_eq!(glyph, Some(Icon::ServerBadgeMinus));
@@ -491,7 +491,7 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
         assert_eq!(stale, shown, "the held fact does not change between ticks");
         assert!(tick(&mut page, &fixture, Some(Blocked::NoKey)), "a fact appearing under a static read-out damages the frame");
         let (shown, glyph, row, clock_caption) = read(&page, &fixture);
-        assert_eq!(shown.as_deref(), Some(plx_platform::i18n::msg::browse_clock_no_key_c()), "owner {owner:?}");
+        assert_eq!(shown.as_deref(), Some(plx_os::i18n::msg::browse_clock_no_key_c()), "owner {owner:?}");
         assert_eq!(glyph, Some(Icon::ClockBadgeAlert));
         assert_eq!(clock_caption, caption, "the verdict is unchanged");
         assert!(row.y >= plain_row.y);
@@ -503,7 +503,7 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
         assert!(tick(&mut page, &fixture, Some(Blocked::KeyChanged)));
         assert_eq!(page.clock.blocked(), Some(Blocked::KeyChanged));
         let (shown, ..) = read(&page, &fixture);
-        assert_eq!(shown.as_deref(), Some(plx_platform::i18n::msg::browse_clock_key_changed_c()));
+        assert_eq!(shown.as_deref(), Some(plx_os::i18n::msg::browse_clock_key_changed_c()));
 
         assert!(tick(&mut page, &fixture, None), "…and one clearing does too");
         let (shown, glyph, ..) = read(&page, &fixture);
@@ -556,7 +556,7 @@ fn a_failed_source_ignores_a_clock_fact_about_another_server() {
     assert_eq!(page.clock.blocked(), None, "another server's fact is not this source's");
     assert_eq!(shown(&page), (None, Some(Icon::ServerBadgeMinus)));
     tick_with_clock(&mut page, &fixture, &facts(Some(Blocked::NoKey)));
-    assert_eq!(shown(&page), (Some(plx_platform::i18n::msg::browse_clock_no_key_c().to_owned()), Some(Icon::ClockBadgeAlert)));
+    assert_eq!(shown(&page), (Some(plx_os::i18n::msg::browse_clock_no_key_c().to_owned()), Some(Icon::ClockBadgeAlert)));
 }
 
 /// **A failed Library section and a failed Home stand on ONE line** (owner, 2026-09-19: the
@@ -1363,7 +1363,7 @@ fn the_page_glyph_and_the_librarys_live_tab_strip_never_overlap() {
 
 mod type_tests { include!("type_tests.rs"); }
 
-mod collections_listing_tests { include!("collections_listing_tests.rs"); }
+pub(crate) mod collections_listing_tests { include!("collections_listing_tests.rs"); }
 
 mod art_admission_tests { include!("art_admission_tests.rs"); }
 mod lookahead_tests { include!("lookahead_tests.rs"); }
@@ -1764,4 +1764,30 @@ fn a_day_turn_changes_the_rails_labels_and_where_its_step_falls() {
     let page = fixture.screen();
     assert_eq!(labels_of(&page), ["Today", "2026", "2025"]);
     assert_eq!(rail_centres(&page, &fixture), [264.0, 304.0, 344.0], "Today and the year after it are a pitch apart, no step");
+}
+
+/// **A grid that was covered notices that Settings changed what it draws under the posters.** A
+/// page returning from under a cover raises no damage of its own (typed page damage retakes a frozen
+/// host's snapshot, the cost a glass menu's BACK paid), so the Under posters policy and the sort value
+/// line, which `step` reads at its head, are what the page answers with damage, once.
+#[test]
+fn the_grid_damages_the_page_when_the_under_posters_setting_moved_under_a_cover() {
+    use crate::registry::captions::{PolicyPin, FIXTURE_TITLE_ON};
+    use plx_plex::plex::session::UnderPosters;
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    let mut uncover_under = |setting: UnderPosters| {
+        let _pin = PolicyPin::set(setting);
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        page.step(&ScreenEvent::Uncover, &fixture.cx(None),
+            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+        present.page_damaged()
+    };
+    assert!(!uncover_under(UnderPosters::DEFAULT), "control: an unchanged setting damages nothing");
+    assert!(uncover_under(FIXTURE_TITLE_ON), "the Title switch moved the caption policy");
+    assert!(!uncover_under(FIXTURE_TITLE_ON), "...once");
+    assert!(uncover_under(UnderPosters { sort_value: !FIXTURE_TITLE_ON.sort_value, ..FIXTURE_TITLE_ON }),
+        "the sort value line is not part of the policy, and is drawn under every card");
 }

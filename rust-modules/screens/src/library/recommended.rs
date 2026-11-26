@@ -33,6 +33,7 @@ use plx_machine::machine::{
     InstanceId, Key, LogicalState, Machine, MachineId,
 };
 use plx_machine::present::Provenance;
+use plx_ui::a11y::{A11y, A11yPath, Seg};
 use plx_ui::cards::{self as ui_cards, CardSource, RowStyle, SectionFrame, Tile};
 use plx_ui::consts::{CARD_DY, K_SCROLL, MARGIN_X, MARGIN_Y, SCR_H, SCR_W, TITLE_DY};
 use plx_ui::frame::Budget;
@@ -206,6 +207,8 @@ pub(super) enum Readout {
 /// The Recommended page: a vertical stack of the library's hub rows.
 pub struct RecommendedScreen {
     caption_policy: plx_ui::caption_policy::CaptionPolicy,
+    /// The Continue Watching setting the deck's tiles were last drawn with (`step` compares it).
+    deck_press: plx_plex::plex::session::DeckPress,
     pub(super) entry: EntryId,
     instance: InstanceId,
     kind: SecKind,
@@ -395,6 +398,7 @@ impl RecommendedScreen {
     pub fn new(entry: EntryId, instance: InstanceId, kind: SecKind) -> Self {
         Self {
             caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
+            deck_press: plx_plex::plex::session::DeckPress::Details,
             entry, instance, kind, keys: KeyRegistry::default(), shelves: Vec::new(),
             section: None, epoch: None, query: None, shelf_publication: None,
             run: ShelfRun::default(), target_run: ShelfRun::default(),
@@ -962,6 +966,7 @@ impl RecommendedScreen {
             TAB_KEY_SHOWS => Some(LibraryReq::Tab(HomeTab::Shows)),
             TAB_KEY_SEARCH => Some(LibraryReq::Tab(HomeTab::Search)),
             TAB_KEY_WATCHLIST => Some(LibraryReq::Tab(HomeTab::Watchlist)),
+            plx_ui::widgets::TAB_KEY_LIVETV => Some(LibraryReq::Tab(HomeTab::LiveTv)),
             TAB_KEY_CHIP => Some(LibraryReq::Account),
             _ => None,
         };
@@ -1033,7 +1038,7 @@ impl RecommendedScreen {
                 // comes from another page's focus or none: not the reader's key (see `LibraryScreen`).
                 let engine_seat = by == &By::Dir && self.initial && to.entry == self.entry
                     && from.is_none_or(|from| from.entry != self.entry);
-                if matches!(by, By::Dir | By::Pointer) && !engine_seat { self.initial = false; }
+                if matches!(by, By::Dir | By::Pointer | By::Script) && !engine_seat { self.initial = false; }
                 self.reveal_focus(*to, *by, cx);
             }
             ScreenEvent::Tick(tick) => {
@@ -1123,6 +1128,14 @@ impl RecommendedScreen {
 impl<H: LibraryLike> Machine<H> for RecommendedScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        // The shelves draw the Under posters policy, and the Continue Watching deck's tile the
+        // Continue Watching setting; Settings changes either while it covers the page, and the
+        // first event after it is where the page learns (a returning page raises no damage).
+        let inputs = H::screen_inputs(cx);
+        let pressed = crate::registry::moved(&mut self.deck_press, inputs.preference::<plx_plex::plex::session::DeckPressPref>());
+        if crate::registry::moved(&mut self.caption_policy, crate::registry::captions::policy_for(inputs)) | pressed {
+            fx.invalidate(Provenance::Nav);
+        }
         self.step_event(ev, cx, fx)
     }
 }
@@ -1256,6 +1269,48 @@ impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
             .unwrap_or(plx_ui::dispatch::STRIP_BASE);
         self.key(elem)
     }
+
+    /// **The ids** (`recommended.<path>`): the crumb's root `header.crumb`, a hub's card
+    /// `shelf.<row>.card.<n>` and a promoted collection's linked heading `shelf.<row>.heading`.
+    /// `<row>` is the hub's position on the page and `<n>` the card's place in the hub's LISTING
+    /// (`CardSource::global`: the window's offset or its `positions`), so a window that pages never
+    /// gives one id to another title; the card's `subject` (its ratingKey) is what a press names to
+    /// stay safe when a publication moves them. A listing position the window does not hold is no
+    /// element. A card whose item the hub has not published is `loaded` false.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        if *key == CRUMB_ELEM { return self.header(cx).a11y(*key).map(A11y::into_owned); }
+        let shelf = |row: usize| A11yPath::new().name("shelf").index(row);
+        if let Some((row, col)) = self.cell_of(*key) {
+            return Some(ui_cards::card_a11y::<H, _>(shelf(row), &self.hub_src(row, cx), col));
+        }
+        let row = self.shelves.iter().position(|row| row.heading_elem() == Some(*key))?;
+        Some(self.heading_widget(row, cx)?.a11y(shelf(row).name("heading")).into_owned())
+    }
+
+    /// Every element of group `g` in focus order: the crumb, a hub's cards (placeholders included) or
+    /// a heading's one element, as `row_elems` answers the page's own focus travel.
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        out.extend(self.row_elems(Some(g)));
+    }
+
+    /// The inverse of [`Self::a11y`]: the path names its candidate by position, and the projection of
+    /// that candidate must answer the same path, so the two cannot disagree about what exists.
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        let mut segs = path.segs();
+        let candidate = match (segs.next(), segs.next(), segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("header")), Some(Seg::Name("crumb")), None, ..) => CRUMB_ELEM,
+            (Some(Seg::Name("shelf")), Some(Seg::Index(row)), Some(Seg::Name("card")), Some(Seg::Index(n)), None) => {
+                let shelf = self.shelves.get(row)?;
+                let at = ui_cards::card_window_index::<H, _>(&self.hub_src(row, cx), n)?;
+                *shelf.elems.get(at)?
+            }
+            (Some(Seg::Name("shelf")), Some(Seg::Index(row)), Some(Seg::Name("heading")), None, ..) => {
+                self.shelves.get(row)?.heading_elem()?
+            }
+            _ => return None,
+        };
+        self.a11y(&candidate, cx).filter(|a| a.path == *path).map(|_| candidate)
+    }
 }
 
 // ---- draw -------------------------------------------------------------------------------------
@@ -1284,7 +1339,7 @@ impl RecommendedScreen {
         self.header_row.get(self.header_key(cx), || {
             let crumb = Crumb::new(
                 super::collections_page::root_label(Self::library_title(cx), self.kind),
-                plx_platform::i18n::msg::library_header_recommended());
+                plx_os::i18n::msg::library_header_recommended());
             let page = PageHeader::new(PageHeaderSpec { crumb: Some(crumb), ..Default::default() }, &[], cx.measure);
             let layout = page.layout(SCR_W, cx.measure);
             let root = layout.items.iter().position(|item| item.slot == Slot::CrumbRoot).unwrap_or(0);
@@ -1297,7 +1352,7 @@ impl RecommendedScreen {
     fn header_key<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (std::ptr::from_ref(plx_platform::i18n::current()) as usize).hash(&mut h);
+        (std::ptr::from_ref(plx_os::i18n::current()) as usize).hash(&mut h);
         Self::library_title(cx).hash(&mut h);
         matches!(self.kind, SecKind::Movie).hash(&mut h);
         h.finish()
@@ -1350,7 +1405,7 @@ impl RecommendedScreen {
                 plx_ui::widgets::Spinner::new(SCR_W * 0.5, SCR_H * 0.52, 26.0).phase(f.cx.tick.ms).draw(&env, f.painter.alpha(f.page_alpha));
             }
             Readout::Empty => {
-                let caption = std::ffi::CString::new(plx_platform::i18n::msg::recommended_page_empty()).unwrap_or_default();
+                let caption = std::ffi::CString::new(plx_os::i18n::msg::recommended_page_empty()).unwrap_or_default();
                 let frame = Rect::new(MARGIN_X, CONTENT_TOP + plx_ui::page_header::BLOCK_H, SCR_W - 2.0 * MARGIN_X, SCR_H - (CONTENT_TOP + plx_ui::page_header::BLOCK_H) - MARGIN_Y);
                 plx_ui::widgets::StatusOverlay::new(frame, &caption, plx_ui::widgets::StatusKind::Empty)
                     .phase(f.cx.tick.ms).draw_measured(&env, p, f.cx.measure);
@@ -1405,6 +1460,8 @@ impl<H: LibraryLike> Screen<H> for RecommendedScreen {
     // library family's word, so a scene that greps `route=library` keeps matching.
     fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str { "library" }
+    /// Its own id namespace: `name()` is the word the Library shares, and an id names its owner.
+    fn a11y_ns(&self) -> &'static str { "recommended" }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> { None }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
@@ -1502,6 +1559,16 @@ impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
     fn index_of(&self, e: &u32) -> Option<usize> { self.elems.iter().position(|elem| elem == e) }
     /// A card whose item the hub has not published draws nothing (its stop still registers).
     fn loaded(&self, i: usize) -> bool { self.item(i).is_some() }
+    /// The item's ratingKey: what a by-id press names to stay on the title it read. A card whose
+    /// item the hub has not published has none.
+    fn subject(&self, i: usize) -> Option<Cow<'_, str>> {
+        self.item(i).filter(|item| !item.rk.is_empty()).map(|item| Cow::Borrowed(item.rk.as_str()))
+    }
+    /// The item's own title: a landscape row's caption is a shaped title and one fact, and the
+    /// Continue Watching deck draws none under its stills.
+    fn a11y_title(&self, i: usize) -> Option<Cow<'_, str>> {
+        self.item(i).map(|item| Cow::Borrowed(item.title.as_str()))
+    }
     fn more(&self) -> bool { self.paging && self.shelf.is_some_and(|shelf| shelf.more) }
     fn page_epoch(&self) -> u32 { self.shelf.map_or(0, |shelf| shelf.epoch) }
     fn more_after(&self) -> bool { self.shelf.is_some_and(|shelf| shelf.more) }

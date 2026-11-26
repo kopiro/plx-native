@@ -1,16 +1,51 @@
 //! The pure data a URI-mode source and its display path carry between the route owner and the
 //! URI driver. Route policy qualifies a source and the application stages it into a driver; neither
-//! names the driver's crate, so the shapes live here and the driver re-exports them.
-
-use std::os::raw::c_int;
+//! names the driver's crate, so the shapes live here and the driver re-exports them. How a driver
+//! binds a picture to its display (a plane, a window, a canvas) is the driver's own detail: the
+//! contract carries only what the driver says of it ([`DisplayEvidence`]).
 
 use crate::{AttemptId, DriverSet, Failure, Requirements, SourceKey, TrackChoice, TrackKind,
     TrackSelection};
 
-/// An explicitly qualified display path. `Acb` is the webOS 4.x plane, bound through the plane
-/// owner; `Exported` is the exported window at a canvas size; `Unbound` is no certified path.
+/// Whether a driver's display path can show a URI source at all. It says nothing of what may be
+/// offered through the path (certification does) and nothing of the Start (the driver's own gate,
+/// asked on the main thread through [`UriDriver::ready_to_start`], does).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Binding { Exported { canvas: (c_int, c_int) }, Acb, Unbound }
+pub enum DisplayReadiness {
+    Ready,
+    /// The driver has no display path to show a source on, for the reason given
+    /// ([`UriNotReady::DisplayUnavailable`] when it has no more to say).
+    NotReady(UriNotReady),
+}
+
+/// What a URI driver reports of its own display path, beside the capabilities and certification its
+/// offers carry. The route reads only this value, captured once when the composition installs the
+/// driver: which window or plane the driver binds to, and how it knows the firmware can, are the
+/// driver's own detail and never a shared one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DisplayEvidence {
+    pub readiness: DisplayReadiness,
+    /// Whether the driver can place a trailer preview's rectangle.
+    pub preview_rectangle: bool,
+    /// The driver's own name for the display path. It is opaque: printed in the boot log for a
+    /// person to read, and branched on by no shared code.
+    pub tag: &'static str,
+}
+
+impl DisplayEvidence {
+    /// A display path that can show a source, with no preview rectangle.
+    pub const fn ready(tag: &'static str) -> Self {
+        Self { readiness: DisplayReadiness::Ready, preview_rectangle: false, tag }
+    }
+
+    /// No display path: nothing is offered through it.
+    pub const fn unavailable(tag: &'static str) -> Self {
+        Self { readiness: DisplayReadiness::NotReady(UriNotReady::DisplayUnavailable),
+            preview_rectangle: false, tag }
+    }
+
+    pub const fn is_ready(self) -> bool { matches!(self.readiness, DisplayReadiness::Ready) }
+}
 
 /// Explicit translation from a neutral selected track to this source's URI-native index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,10 +58,37 @@ pub fn native_index(tracks: &[NativeTrackIndex], selected: TrackSelection) -> Op
     (first.index >= 0 && matches.next().is_none()).then_some(first.index)
 }
 
-/// The authorized URL stays opaque; callers provide the exact native track map with it.
-pub struct UriSource { url: String, tracks: Vec<NativeTrackIndex> }
+/// What a driver whose native track order is not proven must check before it trusts a [`NativeTrackIndex`]: the
+/// identity evidence the source states for one selected track. A driver that trusts its map ignores it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeTrackCheck {
+    /// The source has one track of this kind, so its index needs no other evidence.
+    Sole,
+    /// The track's language as the server states it (ISO 639, e.g. `ger`; empty when unknown): the native track
+    /// the driver selects must report the same language.
+    Language(String),
+}
+
+/// The authorized URL stays opaque; callers provide the exact native track map with it, and may state for a track
+/// the [`NativeTrackCheck`] a driver that does not trust the map uses.
+pub struct UriSource { url: String, tracks: Vec<NativeTrackIndex>, checks: Vec<(TrackSelection, NativeTrackCheck)> }
 impl UriSource {
-    pub fn new(url: String, tracks: Vec<NativeTrackIndex>) -> Self { Self { url, tracks } }
+    pub fn new(url: String, tracks: Vec<NativeTrackIndex>) -> Self { Self { url, tracks, checks: Vec::new() } }
+
+    /// This source with `check` stated for `selection`, replacing any check stated for it before.
+    pub fn with_check(mut self, selection: TrackSelection, check: NativeTrackCheck) -> Self {
+        self.checks.retain(|(stated, _)| *stated != selection);
+        self.checks.push((selection, check));
+        self
+    }
+
+    /// The identity check stated for `selection`, if any.
+    pub fn check_of(&self, selection: TrackSelection) -> Option<&NativeTrackCheck> {
+        self.checks.iter().find(|(stated, _)| *stated == selection).map(|(_, check)| check)
+    }
+
+    /// Every identity check this source states, for a driver that keeps them past [`Self::into_parts`].
+    pub fn checks(&self) -> &[(TrackSelection, NativeTrackCheck)] { &self.checks }
 
     pub fn has_url(&self) -> bool { !self.url.is_empty() }
 
@@ -41,10 +103,16 @@ impl UriSource {
 
     /// Whether this owned source can execute its required native track choices. The same
     /// check guards qualification and the physical Start; no URL or index map escapes.
+    ///
+    /// `Off` names no track, so it needs nothing of the source's map: whether a play can be carried
+    /// with a track off is the DRIVER's capability ([`Capabilities::supports_track`]), which every
+    /// URI driver checks before this (a pipeline that shows a default subtitle by itself states
+    /// `subtitle_off: false` and refuses it there).
+    ///
+    /// [`Capabilities::supports_track`]: crate::Capabilities::supports_track
     pub fn can_supply(&self, requirements: Requirements) -> bool {
         let mapped = |choice, kind| match choice {
-            TrackChoice::Unspecified => true,
-            TrackChoice::Off => false,
+            TrackChoice::Unspecified | TrackChoice::Off => true,
             TrackChoice::Selected(id) => native_index(&self.tracks, TrackSelection { kind, id }).is_some(),
         };
         self.has_url() && self.valid_track_map()
@@ -58,6 +126,11 @@ impl UriSource {
 /// `Box<dyn UriDriver<Context = MainThread>>`, so the product driver (`plx_play_uri`) and a
 /// test fake are interchangeable and the player crate names neither.
 pub trait UriDriver: DriverSet {
+    /// What this driver reports of its display path, asked once by the composition that installs it
+    /// and handed to the route as immutable evidence. It is the display half of the driver's
+    /// evidence, beside the capabilities its offers carry and the certification the product grants;
+    /// whether a Start can be taken now is [`ready_to_start`](Self::ready_to_start)'s question.
+    fn display(&self) -> DisplayEvidence;
     /// Give exactly one authorized, owned URL to the next matching Start. Superseding a staged
     /// source destroys its old locator; a failed, cancelled or expired Start cannot reuse it.
     fn stage_source(&mut self, attempt: AttemptId, key: SourceKey, source: UriSource)
@@ -77,18 +150,50 @@ pub trait UriDriver: DriverSet {
     fn ready_to_start(&mut self, _ctx: &Self::Context) -> Result<(), UriNotReady> { Ok(()) }
 }
 
-/// Why a [`UriDriver`] cannot take a Start ([`UriDriver::ready_to_start`]).
+/// Why a [`UriDriver`] cannot take a Start ([`UriDriver::ready_to_start`]), or has no display path
+/// ([`DisplayReadiness::NotReady`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UriNotReady {
-    /// The ACB display's handle for the URI engine could not be created or initialized.
-    AcbHandle,
+    /// The driver has no display path to show a source on.
+    DisplayUnavailable,
+    /// The driver's own reason, in its own words: the text is what the offer's decline line says.
+    Driver(&'static str),
 }
 
 impl UriNotReady {
     /// The reason as `uri: original declined (<reason>)` says it.
     pub fn log_name(self) -> &'static str {
         match self {
-            Self::AcbHandle => "the ACB handle for the URI engine could not be created",
+            Self::DisplayUnavailable => "the driver has no display path",
+            Self::Driver(reason) => reason,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Capabilities, Fidelity, SourceKind};
+
+    fn wants(audio_track: TrackChoice, subtitle_track: TrackChoice) -> Requirements {
+        Requirements { source: SourceKind::ProgressiveUri, video: Fidelity::Exact, audio: Fidelity::Exact,
+            audio_track, subtitle_track }
+    }
+
+    /// Off names no track, so a URL source supplies it with an empty map; whether it is carried is the driver's
+    /// capability, which refuses it where the pipeline cannot hold a track off.
+    #[test]
+    fn off_needs_no_native_track_and_is_the_drivers_to_refuse() {
+        let source = UriSource::new("http://pms/file".into(), vec![]);
+        let off = wants(TrackChoice::Unspecified, TrackChoice::Off);
+        assert!(source.can_supply(off));
+        assert!(source.can_supply(wants(TrackChoice::Off, TrackChoice::Unspecified)));
+        assert!(!source.can_supply(wants(TrackChoice::Unspecified, TrackChoice::Selected(7))),
+            "a selected track still needs its native index");
+        assert!(!UriSource::new(String::new(), vec![]).can_supply(off), "no URL, no source");
+        let no_off = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false, pause: true, seek: true,
+            audio_track: true, subtitle_track: true, audio_off: false, subtitle_off: false };
+        assert!(!no_off.supports(off));
+        assert!(Capabilities { subtitle_off: true, ..no_off }.supports(off));
     }
 }

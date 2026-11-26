@@ -136,9 +136,9 @@ type MetaKey = (i64, bool, Option<String>);
 /// server stated one.
 fn order_note(collection: &Collection) -> &'static str {
     match collection.order {
-        Some(CollectionOrder::Release) => plx_platform::i18n::msg::browse_collection_order_release(),
-        Some(CollectionOrder::Title) => plx_platform::i18n::msg::browse_collection_order_title(),
-        Some(CollectionOrder::Custom) => plx_platform::i18n::msg::browse_collection_order_custom(),
+        Some(CollectionOrder::Release) => plx_os::i18n::msg::browse_collection_order_release(),
+        Some(CollectionOrder::Title) => plx_os::i18n::msg::browse_collection_order_title(),
+        Some(CollectionOrder::Custom) => plx_os::i18n::msg::browse_collection_order_custom(),
         None => "",
     }
 }
@@ -154,15 +154,15 @@ fn head_alpha(scroll: f32) -> f32 {
 /// tile's caption uses: `fmt::collection_count`), or the kind alone ([`meta_key`]).
 fn meta_line(collection: &Collection) -> CString {
     match meta_key(collection) {
-        (_, true, _) => plx_platform::i18n::msg::browse_collection_kind_c().to_owned(),
-        (count, false, _) => CString::new(plx_platform::i18n::msg::browse_collection_meta(&plx_ui::fmt::collection_count(collection.subtype.as_deref(), count)))
+        (_, true, _) => plx_os::i18n::msg::browse_collection_kind_c().to_owned(),
+        (count, false, _) => CString::new(plx_os::i18n::msg::browse_collection_meta(&plx_ui::fmt::collection_count(collection.subtype.as_deref(), count)))
             .unwrap_or_default(),
     }
 }
 
 pub fn member_label(item: &PmsMovie) -> String {
     match item.kind {
-        2 if item.season_index > 0 => plx_platform::i18n::msg::browse_collection_season_mark(item.season_index as i64),
+        2 if item.season_index > 0 => plx_os::i18n::msg::browse_collection_season_mark(item.season_index as i64),
         3 => plx_ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64),
         _ => String::new(),
     }
@@ -286,6 +286,11 @@ impl<H: Host<Elem = u32>> CardSource<H> for Members<'_> {
         self.collection.item(i).map(|item| member_caption(item, &self.policy)).unwrap_or_default()
     }
     fn progress(&self, i: usize) -> Option<f32> { self.collection.item(i)?.resume_frac() }
+    /// The member's ratingKey: what a by-id press names to stay on the title it read (the id's
+    /// position, `items.card.<i>`, moves when the listing does).
+    fn subject(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
+        self.collection.item(i).map(|item| std::borrow::Cow::Borrowed(item.rk.as_str()))
+    }
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
         let persistent = self.label_at(i);
         if persistent.is_empty() { return; }
@@ -621,13 +626,15 @@ impl<H: ContentLike + CollectionLike> StackPage<H> for Page {
         let collection = self.collection(cx);
         let head = collection.is_some_and(CollectionScreen::shows_head);
         let failed = collection.is_some_and(|c| c.status == CollectionStatus::Failed);
-        out.push(SectionSpec::new(Sec::Head, Kind::Custom { height: GRID_TOP, focusable: head && self.summary_more }, HEADER_GROUP).ranked(1));
-        out.push(SectionSpec::new(Sec::Items, Kind::Grid { spec: GridSpec::new(GRID_TOP, CONTENT_TOP) }, GRID_GROUP));
+        // The sections are named for what they ARE (the accessibility ids: `head.0`, `items.card.<i>`,
+        // `status.0`), not by position: the head or the status comes and goes with the data.
+        out.push(SectionSpec::new(Sec::Head, Kind::Custom { height: GRID_TOP, focusable: head && self.summary_more }, HEADER_GROUP).ranked(1).named("head"));
+        out.push(SectionSpec::new(Sec::Items, Kind::Grid { spec: GridSpec::new(GRID_TOP, CONTENT_TOP) }, GRID_GROUP).named("items"));
         let retry = if failed {
             CollectionScreen::status_overlay(collection, cx.tick.ms, cx.measure).action_frame_measured(cx.measure)
         } else { None };
         out.push(SectionSpec::new(Sec::Status,
-            Kind::Overlay { rect: retry.unwrap_or(CollectionScreen::status_frame()), focusable: retry.is_some() }, STATUS_GROUP).ranked(2));
+            Kind::Overlay { rect: retry.unwrap_or(CollectionScreen::status_frame()), focusable: retry.is_some() }, STATUS_GROUP).ranked(2).named("status"));
     }
 
     fn fallback(&self, _cx: &Cx<'_, H>, out: &mut Vec<Sec>) {
@@ -885,14 +892,14 @@ impl CollectionScreen {
         measure: &dyn plx_machine::machine::Measure) -> StatusOverlay<'a> {
         match collection.map(|c| c.status).unwrap_or(CollectionStatus::Loading) {
             // placeholder-exempt: builds the value only; counted where drawn (StatusOverlay::draw_geometry, Working)
-            CollectionStatus::Loading => StatusOverlay::new(Self::status_frame(), plx_platform::i18n::msg::browse_collection_loading_c(), StatusKind::Working).phase(tick),
-            CollectionStatus::Empty => StatusOverlay::new(Self::status_frame(), plx_platform::i18n::msg::browse_collection_empty_c(), StatusKind::Empty),
-            CollectionStatus::Unavailable => StatusOverlay::new(Rect::FULL, plx_platform::i18n::msg::browse_collection_unavailable_c(), StatusKind::Failed)
+            CollectionStatus::Loading => StatusOverlay::new(Self::status_frame(), plx_os::i18n::msg::browse_collection_loading_c(), StatusKind::Working).phase(tick),
+            CollectionStatus::Empty => StatusOverlay::new(Self::status_frame(), plx_os::i18n::msg::browse_collection_empty_c(), StatusKind::Empty),
+            CollectionStatus::Unavailable => StatusOverlay::new(Rect::FULL, plx_os::i18n::msg::browse_collection_unavailable_c(), StatusKind::Failed)
                 .page(plx_ui::icons::Icon::PersonBadgeXmark)
-                .reason(plx_platform::i18n::msg::browse_collection_unavailable_reason_c()),
+                .reason(plx_os::i18n::msg::browse_collection_unavailable_reason_c()),
             CollectionStatus::Failed => {
-                let overlay = StatusOverlay::new(Rect::FULL, plx_platform::i18n::msg::browse_home_failed_c(), StatusKind::Failed)
-                    .page(plx_ui::icons::Icon::ServerBadgeMinus).action(plx_platform::i18n::msg::browse_action_retry_c());
+                let overlay = StatusOverlay::new(Rect::FULL, plx_os::i18n::msg::browse_home_failed_c(), StatusKind::Failed)
+                    .page(plx_ui::icons::Icon::ServerBadgeMinus).action(plx_os::i18n::msg::browse_action_retry_c());
                 match collection {
                     Some(c) => overlay.glyph_ceiling(Self::header_text_bottom(c, measure)),
                     None => overlay,
@@ -957,7 +964,11 @@ impl CollectionScreen {
 impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        self.page.policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
+        // Under posters is a setting Settings changes while it covers the page: noticed here, on
+        // whichever event comes first, and answered with page damage (a returning page raises none).
+        if crate::registry::moved(&mut self.page.policy, crate::registry::captions::policy_for(H::screen_inputs(cx))) {
+            fx.invalidate(Provenance::Nav);
+        }
         // The content index is current before the stack reads it for this event.
         match ev {
             ScreenEvent::Tick(_) => self.resync(cx),
@@ -1002,8 +1013,8 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
                 fx.invalidate(Provenance::Nav); Handled::Yes
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
-                if matches!(by, By::Dir | By::Pointer) { self.page.return_pending = false; }
-                if self.collection(cx).is_some() && to.elem == HEADER_ELEM && matches!(by, By::Dir | By::Pointer) {
+                if matches!(by, By::Dir | By::Pointer | By::Script) { self.page.return_pending = false; }
+                if self.collection(cx).is_some() && to.elem == HEADER_ELEM && matches!(by, By::Dir | By::Pointer | By::Script) {
                     self.page.header_marked = true;
                 }
                 fx.invalidate(Provenance::Input); Handled::Yes
@@ -1112,7 +1123,7 @@ mod tests {
     }
     /// What this host's container reports as the title of the page beneath the screen: a catalog
     /// string, as every title it reports is (a frame's text is graded against the catalog).
-    pub(super) fn parent() -> &'static str { plx_platform::i18n::msg::browse_chrome_home() }
+    pub(super) fn parent() -> &'static str { plx_os::i18n::msg::browse_chrome_home() }
     impl crate::registry::ScreenInputsLike for CollectionHost {
         fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
     }
@@ -1193,6 +1204,33 @@ mod tests {
         Machine::<CollectionHost>::step(screen, &ev, cx, &mut fx);
         drop(fx);
         out
+    }
+
+    /// **A collection page, covered, notices that Settings changed what its members draw under
+    /// the posters** (`step`'s head): a page returning from under a cover raises no damage of its
+    /// own, and typed page damage is what retakes a frozen host's snapshot.
+    #[test]
+    fn the_collection_damages_the_page_when_the_under_posters_setting_moved_under_a_cover() {
+        use crate::registry::captions::{PolicyPin, FIXTURE_TITLE_ON};
+        use plx_plex::plex::session::UnderPosters;
+        let _guard = plx_base::testlock::serial();
+        let (store, mut screen) = seeded();
+        let mut uncover_under = |setting: UnderPosters| {
+            let _pin = PolicyPin::set(setting);
+            let mut present = plx_machine::present::Present::new();
+            let mut out = Vec::new();
+            let mut fx = Effects::new(&mut out,
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(9)), &mut present);
+            Machine::<CollectionHost>::step(&mut screen, &ScreenEvent::Cover, &cx(store.view(), None), &mut fx);
+            drop(fx);
+            present.page_damaged()
+        };
+        // Probed with `Cover`: this page still damages unconditionally on `Uncover`/`Enter` (a
+        // leftover), and the head compare is the same on whichever event comes first.
+        uncover_under(UnderPosters::DEFAULT);
+        assert!(!uncover_under(UnderPosters::DEFAULT), "control: an unchanged setting damages nothing");
+        assert!(uncover_under(FIXTURE_TITLE_ON), "the Title switch moved the caption policy");
+        assert!(!uncover_under(FIXTURE_TITLE_ON), "...once");
     }
 
     fn opens_summary(out: &[plx_machine::machine::Stamped<CollectionHost>]) -> bool {
@@ -1509,7 +1547,7 @@ mod tests {
     /// "6 films", not "6 items", for a movie collection; before the subtype lands it is items.
     #[test]
     fn the_meta_line_counts_in_the_noun_of_the_subtype() {
-        let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _g = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let (mut store, _) = seeded();
         store.edit_for_test(|c| { c.child_count = 6; c.subtype = None; });
         assert_eq!(meta_line(store.view().current().unwrap()).to_str().unwrap(), "6 items \u{b7} Collection");
@@ -1533,7 +1571,7 @@ mod tests {
         let overlay = CollectionScreen::status_overlay(Some(c), 0, &FixtureMeasure);
         let f = overlay.frame;
         assert_eq!((f.x, f.y, f.w, f.h), (96.0, 460.0, 1728.0, 475.0));
-        assert_eq!(overlay.caption, plx_platform::i18n::msg::browse_collection_empty_c());
+        assert_eq!(overlay.caption, plx_os::i18n::msg::browse_collection_empty_c());
     }
 
     /// C4b: an unavailable collection is the page-filling Failed verdict at the shared anchor
@@ -1890,12 +1928,12 @@ mod tests {
     fn the_collection_pages_fixed_slots_fit_in_every_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
         use plx_ui::fit::HEADROOM;
-        use plx_platform::i18n::{language_on_this_thread_for_test, msg};
+        use plx_os::i18n::{language_on_this_thread_for_test, msg};
         use plx_machine::machine::Measure;
         let m = ShippedMeasure;
         let mark_budget = (CARD_W - 2.0 * 16.0) * HEADROOM;
         let mut out = Vec::new();
-        for language in plx_platform::i18n::SHIPPED {
+        for language in plx_os::i18n::SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             let season = PmsMovie { kind: 2, season_index: 99, ..Default::default() };
             let mark = member_label(&season);
@@ -1932,7 +1970,7 @@ mod tests {
     fn every_app_owned_run_on_the_collection_page_comes_from_the_catalog() {
         use plx_ui::screen::DrawFrame;
         let _serial = plx_base::testlock::serial();
-        let _pseudo = plx_platform::i18n::pseudo_on_this_thread_for_test();
+        let _pseudo = plx_os::i18n::pseudo_on_this_thread_for_test();
         let server = ["Set", "Qwerty", "Zzyzx", "Vlox"];
         let season = PmsMovie { rk: "s".into(), kind: 2, season_index: 3, title: "Zzyzx".into(),
             show_title: "Vlox".into(), ..Default::default() };

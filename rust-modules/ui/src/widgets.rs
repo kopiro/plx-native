@@ -139,8 +139,9 @@ pub fn declare_chrome_glass_for_test(p: Painter, rects: &[Rect]) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ground {
     /// A MENU (Sort & Filter, the account menu, the item hold menu): glass on the frozen ground
-    /// (`popover_glass`: the latched field and the host snapshot), the latched-field ground only
-    /// when there is nothing frozen to stand on.
+    /// (`popover_glass`: a frost of the host snapshot, the latched field as its fallback body, and
+    /// the snapshot itself for the rim), the latched-field ground only when there is nothing frozen
+    /// to stand on.
     Menu,
     /// Everything else that stands on a panel (alerts, About, Tracks, the person bio, the decision
     /// alert): the pre-DS6 ground, the latched underlay field under the frost. Never glass.
@@ -173,8 +174,8 @@ pub enum Ground {
 /// **DS6 put glass back on MENUS, and only menus** (owner decision, wave 2 review): the caller
 /// states which ground it wants with a [`Ground`], per call, and there is no global switch.
 /// [`Ground::Menu`] runs `popover_glass::draw` first and wins whenever the field is latched; that
-/// glass stands on the same frozen pictures (this field, and the host snapshot for its rim) and
-/// reads no framebuffer either. Everything described above is the ground of [`Ground::Sheet`]
+/// glass stands on frozen pictures (the host's frost of the page for its body, this field as the
+/// body's fallback, and the host snapshot for its rim) and reads no framebuffer either. Everything described above is the ground of [`Ground::Sheet`]
 /// (alerts, About, Tracks, the person bio, the decision alert) and the FALLBACK ground of a menu
 /// with nothing frozen to stand on. The chrome (the top bar's track, the profile chip's capsule,
 /// the hold hint) is the only live-blur user.
@@ -185,23 +186,27 @@ pub fn panel_ground(
     field: Option<&crate::underlay::UnderlayField>,
     ground: Ground,
 ) {
-    panel_ground_shadowed(p, r, radius, field, ground, 1.0);
+    panel_ground_shadowed(p, r, r, radius, field, ground, 1.0, plx_gfx::gfx::GlassMorph::NONE);
 }
 
 /// [`panel_ground`] with a menu glass's drop shadow at `shadow` of the painter's opacity
-/// ([`crate::popover_glass::draw_shadowed`]); the field ground casts none, so it is unchanged.
+/// ([`crate::popover_glass::draw_shadowed`]) and a morph's join (`morph`, which only the glass wears:
+/// the field ground casts no shadow and has no join, so it is unchanged).
+#[allow(clippy::too_many_arguments)]
 pub fn panel_ground_shadowed(
     p: Painter,
     r: Rect,
+    settled: Rect,
     radius: f32,
     field: Option<&crate::underlay::UnderlayField>,
     ground: Ground,
     shadow: f32,
+    morph: plx_gfx::gfx::GlassMorph,
 ) {
     // DS6: a menu is glass on the frozen ground (`popover_glass`); the field ground below is the
     // fallback when there is nothing frozen to stand on. A sheet never takes this branch.
     if ground == Ground::Menu
-        && crate::profile::phase("panel.glass", || crate::popover_glass::draw_shadowed(p, r, radius, field, shadow))
+        && crate::profile::phase("panel.glass", || crate::popover_glass::draw_shadowed(p, r, settled, radius, field, shadow, morph))
     {
         return;
     }
@@ -372,6 +377,16 @@ pub enum Art<'a> {
         key: &'a str,
         res: (c_int, c_int),
     },
+    /// **A Live TV channel's tile**: its logo, contained on a flat plate with the channel number
+    /// at the corner (`channel_tile`). The logo is a transparent PNG, so it is asked for as one
+    /// ([`ArtRequest::png`]); `name` is what stands in the logo's place when the channel has none.
+    /// `sid` is the raw id of the server that holds the logo, as every variant carries.
+    Channel {
+        sid: u16,
+        logo: &'a str,
+        number: &'a str,
+        name: &'a str,
+    },
 }
 
 impl Art<'_> {
@@ -388,6 +403,7 @@ impl Art<'_> {
             Self::Still(Some(m)) => (m.owner, m.src, still_key(m), 1),
             Self::Thumb { sid, key, .. } => (key.as_ptr() as usize, *sid, *key, 2),
             Self::Person { sid, key, .. } => (key.as_ptr() as usize, *sid, *key, 3),
+            Self::Channel { sid, logo, .. } => (logo.as_ptr() as usize, *sid, *logo, 4),
             Self::Poster(None) | Self::Still(None) => return None,
         };
         let mut hash = std::collections::hash_map::DefaultHasher::new();
@@ -817,7 +833,7 @@ pub fn still_overlay(
                 ),
                 (None, _) => {
                     let tag = tag_of();
-                    let status = if tag.is_empty() { String::new() } else { plx_platform::i18n::msg::widgets_card_new_episode().to_owned() };
+                    let status = if tag.is_empty() { String::new() } else { plx_os::i18n::msg::widgets_card_new_episode().to_owned() };
                     (tag, status, crate::still_footer::Right::None)
                 }
             };
@@ -906,7 +922,7 @@ pub fn art_uv(art: &Art, tw: f32, th: f32, r: Rect) -> [f32; 4] {
 pub fn art_crop(art: &Art) -> crate::Crop {
     match art {
         Art::Person { .. } => crate::Crop::Headshot,
-        Art::Poster(_) | Art::Still(_) | Art::Thumb { .. } => crate::Crop::Centre,
+        Art::Poster(_) | Art::Still(_) | Art::Thumb { .. } | Art::Channel { .. } => crate::Crop::Centre,
     }
 }
 
@@ -942,27 +958,41 @@ pub fn resolve_card_art(p: Painter, rect: Rect, art: &Art<'_>) -> ArtImage {
     if p.is_recording() { return ArtImage::NONE; }
     let admission = art.motion_identity()
         .map(|id| crate::card_motion::Scope::card(id, p.to_screen(rect).0));
-    let (tex, w, h) = card_art_request(art).map_or((0, 0.0, 0.0), |(srv, path, w, h)| resolve_tex_wh_on(srv, path, w, h, 0));
+    let (tex, w, h) = card_art_request(art).map_or((0, 0.0, 0.0), |q| resolve_tex_wh_on(q.srv, q.path, q.w, q.h, c_int::from(q.png)));
     #[cfg(feature = "devtriggers")]
     {
         crate::card_motion_metrics::draw(tex != 0);
-        if let Some((srv, path, w, h)) = card_art_request(art) {
-            crate::card_probe::art(srv, path, w, h, tex != 0);
+        if let Some(q) = card_art_request(art) {
+            crate::card_probe::art(q.srv, q.path, q.w, q.h, tex != 0);
         }
     }
     let shown = admission.as_ref().map_or(1.0, |scope| scope.arrival(tex != 0));
     ArtImage { tex, w, h, shown }
 }
 
-/// The `(server, path, width, height)` [`resolve_card_art`] asks the source for, for a screen that
-/// must WARM exactly that key (the Library's at-rest lookahead). [`resolve_card_art`] resolves
-/// through this, so the two cannot name different keys; `screens/src/library/lookahead_tests.rs::the_lookahead_asks_for_the_key_the_card_draw_resolves` pins it. `None` for an empty slot.
-pub fn card_art_request<'a>(art: &Art<'a>) -> Option<(u16, &'a str, c_int, c_int)> {
-    Some(match art {
-        Art::Poster(m) => { let m = (*m)?; (m.src, m.thumb, POSTER_RES.0, POSTER_RES.1) }
-        Art::Still(m) => { let m = (*m)?; (m.src, still_key(&m), STILL_RES.0, STILL_RES.1) }
-        Art::Thumb { sid, key, res } | Art::Person { sid, key, res } => (*sid, *key, res.0, res.1),
-    })
+/// What [`resolve_card_art`] asks the image source for: the server, the path on it, the size, and whether
+/// the picture is wanted as a PNG (a logo with a transparent ground; everything else is a JPEG).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArtRequest<'a> {
+    pub srv: u16,
+    pub path: &'a str,
+    pub w: c_int,
+    pub h: c_int,
+    pub png: bool,
+}
+
+/// What [`resolve_card_art`] asks the source for, for a screen that must WARM exactly that key (the
+/// Library's at-rest lookahead). [`resolve_card_art`] resolves through this, so the two cannot name
+/// different keys; `screens/src/library/lookahead_tests.rs::the_lookahead_asks_for_the_key_the_card_draw_resolves`
+/// pins it. `None` for an empty slot.
+pub fn card_art_request<'a>(art: &Art<'a>) -> Option<ArtRequest<'a>> {
+    let (srv, path, (w, h), png) = match art {
+        Art::Poster(m) => { let m = (*m)?; (m.src, m.thumb, POSTER_RES, false) }
+        Art::Still(m) => { let m = (*m)?; (m.src, still_key(&m), STILL_RES, false) }
+        Art::Thumb { sid, key, res } | Art::Person { sid, key, res } => (*sid, *key, *res, false),
+        Art::Channel { sid, logo, .. } => (*sid, *logo, channel_tile::LOGO_RES, true),
+    };
+    Some(ArtRequest { srv, path, w, h, png })
 }
 
 /// The name a poster card draws on the neutral collection tile, when it draws one: a collection
@@ -1138,6 +1168,7 @@ pub fn card_named_led(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>,
             // it too.
             let _ = m;
         }
+        Art::Channel { sid, logo, number, name } => channel_tile::draw(p, frame, r, rad, f, &channel_tile::Face { sid, logo, number, name }, image),
         Art::Person { key, .. } => {
             let ArtImage { tex: t, w: tw, h: th, .. } = image;
             if t != 0 {
@@ -1284,8 +1315,8 @@ pub fn row_watch_state<T: crate::tile::Tile + ?Sized>(m: &T) -> PosterMark {
 ///
 /// Each names the OUTCOME its press produces, never the state the item is in — which is what lets
 /// a part-watched item show both at once without either being a lie.
-pub fn mark_watched_verb() -> &'static str { plx_platform::i18n::msg::widgets_action_mark_watched() }
-pub fn mark_unwatched_verb() -> &'static str { plx_platform::i18n::msg::widgets_action_mark_unwatched() }
+pub fn mark_watched_verb() -> &'static str { plx_os::i18n::msg::widgets_action_mark_watched() }
+pub fn mark_unwatched_verb() -> &'static str { plx_os::i18n::msg::widgets_action_mark_unwatched() }
 
 /// …and the third verb the same two surfaces share: **play this from 00:00, ignoring the resume
 /// point.** The detail hero's disc and the card menu's row are one action, so they carry one WORD —
@@ -1299,8 +1330,8 @@ pub fn mark_unwatched_verb() -> &'static str { plx_platform::i18n::msg::widgets_
 /// resembling a play mark. The two were reconciled onto one glyph for a day and it was wrong;
 /// `Icon::Restart`'s doc is the argument. One action, one word, and the mark chosen per surface for
 /// what that surface has to tell apart.
-pub fn play_from_start_verb() -> &'static str { plx_platform::i18n::msg::widgets_action_play_start() }
-pub fn play_trailer_verb() -> &'static str { plx_platform::i18n::msg::widgets_action_play_trailer() }
+pub fn play_from_start_verb() -> &'static str { plx_os::i18n::msg::widgets_action_play_start() }
+pub fn play_trailer_verb() -> &'static str { plx_os::i18n::msg::widgets_action_play_trailer() }
 
 /// The **watched tick** on a poster, as fractions of the tile's DRAWN width: the tick's box, its
 /// corner inset, then the veil's box. Anchored on the design system's `ArtTile` — a 26px tick inset
@@ -1325,6 +1356,9 @@ const VEIL_TEX_PX: usize = 64;
 /// identical on every platform this targets), written once on the 0→nonzero transition below and
 /// read everywhere else — the same shape the diagnostic counters already uses in this file.
 static VEIL_TEX: AtomicU32 = AtomicU32::new(0);
+/// The same falloff mirrored to peak at the TOP-LEFT corner ([`versions_mark`]'s). `tex_uv` reads a
+/// reversed window as a zero-width crop, not a flip, so the mirror is its own texture.
+static VEIL_TEX_LEFT: AtomicU32 = AtomicU32::new(0);
 
 /// The corner **veil** texture: white RGB with a radial alpha falloff peaking at the TOP-RIGHT
 /// corner, generated once and reused at every size. It is a texture rather than geometry because the
@@ -1336,7 +1370,15 @@ static VEIL_TEX: AtomicU32 = AtomicU32::new(0);
 /// gets the tile's own silhouette for free — the veil's other three corners live in fully
 /// transparent territory, so rounding them changes nothing.
 fn veil_tex() -> std::os::raw::c_uint {
-    let cached = VEIL_TEX.load(Relaxed);
+    veil_tex_at(&VEIL_TEX, false)
+}
+
+fn veil_tex_left() -> std::os::raw::c_uint {
+    veil_tex_at(&VEIL_TEX_LEFT, true)
+}
+
+fn veil_tex_at(slot: &AtomicU32, mirrored: bool) -> std::os::raw::c_uint {
+    let cached = slot.load(Relaxed);
     if cached != 0 {
         return cached;
     }
@@ -1345,7 +1387,7 @@ fn veil_tex() -> std::os::raw::c_uint {
     for y in 0..n {
         for x in 0..n {
             // distance from the top-right corner, in units of the box's width
-            let dx = (n - 1 - x) as f32 / (n - 1) as f32;
+            let dx = (if mirrored { x } else { n - 1 - x }) as f32 / (n - 1) as f32;
             let dy = y as f32 / (n - 1) as f32;
             let a = (1.0 - (dx * dx + dy * dy).sqrt() / VEIL_EXTENT).clamp(0.0, 1.0);
             let i = (y * n + x) * 4;
@@ -1356,7 +1398,7 @@ fn veil_tex() -> std::os::raw::c_uint {
         }
     }
     let tex = plx_gfx::gfx::upload_rgba(0, n as std::os::raw::c_int, n as std::os::raw::c_int, px.as_ptr());
-    VEIL_TEX.store(tex, Relaxed);
+    slot.store(tex, Relaxed);
     tex
 }
 
@@ -1385,10 +1427,7 @@ pub fn corner_mark(p: Painter, card: Rect, rad: f32, icon: crate::icons::Icon) {
         rad,
         theme::TILE_MARK_VEIL,
     );
-    // Quantized to 4px so the focus pop reuses a handful of cached masks instead of rasterizing +
-    // uploading one per rounded pixel, and proportional to the DRAWN tile so the mark rides the pop.
-    let d = ((card.w * TICK_RATIO) / 4.0).round() * 4.0; // 24px on a 250 card (26 → nearest rung)
-    let ins = card.w * TICK_INSET;
+    let (d, ins) = tick_box(card.w);
     let tick = Rect::new(card.x + card.w - ins - d, card.y + ins, d, d);
     p.shadow(
         tick,
@@ -1398,6 +1437,65 @@ pub fn corner_mark(p: Painter, card: Rect, rad: f32, icon: crate::icons::Icon) {
         theme::TILE_MARK_SHADOW,
     );
     crate::icons::draw(p, icon, tick, theme::TILE_MARK_INK);
+}
+
+/// The tick's box and corner inset for a tile `w` wide. Quantized to 4px so the focus pop reuses a
+/// handful of cached masks instead of rasterizing + uploading one per rounded pixel, and
+/// proportional to the DRAWN tile so the mark rides the pop. 24px / 12px on a 250 card (26 → the
+/// nearest rung).
+fn tick_box(w: f32) -> (f32, f32) {
+    (((w * TICK_RATIO) / 4.0).round() * 4.0, w * TICK_INSET)
+}
+
+/// The least version count that earns [`versions_mark`]: one file is the normal case and says nothing.
+pub const VERSIONS_MARK_MIN: usize = 2;
+
+/// **The versions mark** on an episode still (VER-7 D3 E): the overlapping-sheets glyph and the file
+/// count as a numeral, `⧉ 2`, at the TOP-LEFT of the still, where the official app puts it. It is
+/// the watched tick's own object, mirrored: the same veil texture (flipped to the left corner), the
+/// same inset, glyph box and soft shadow ([`tick_box`]), the same ink, and a numeral in the caption
+/// face the still's footer is set in. No new colour or token.
+///
+/// `count` is the episode's number of files; under [`VERSIONS_MARK_MIN`] nothing is drawn. `card` is
+/// the rect actually drawn (scaled while popped) and `rad` its corner radius. `unit_w` is the width
+/// the mark's ratios are taken on: a 250 tile for a poster, so a wider still carries a mark of the
+/// same physical size (`CARD_W`, scaled with the pop) instead of a 44px glyph. Returns whether it
+/// drew.
+pub fn versions_mark(
+    p: Painter,
+    card: Rect,
+    rad: f32,
+    unit_w: f32,
+    count: usize,
+    measure: &dyn plx_machine::machine::Measure,
+) -> bool {
+    if count < VERSIONS_MARK_MIN {
+        return false;
+    }
+    let v = unit_w * VEIL_RATIO;
+    // The tick's veil mirrored, its peak at the TOP-LEFT corner. A recording painter submits
+    // nothing, so it must not upload the texture either (no GL context).
+    let veil = if p.is_recording() { 0 } else { veil_tex_left() };
+    p.tex(
+        veil,
+        Rect::new(card.x, card.y, v, v),
+        rad,
+        theme::TILE_MARK_VEIL,
+    );
+    let (d, ins) = tick_box(unit_w);
+    let glyph = Rect::new(card.x + ins, card.y + ins, d, d);
+    let sz = theme::size::CAPTION;
+    let text = count.to_string();
+    let (run, w) = measure.fit_line_measured(&text, v, sz, false);
+    let gap = theme::space::XS * 0.5;
+    // One shadow under glyph and numeral together, the tick's own (`corner_mark`).
+    let pill = Rect::new(glyph.x, glyph.y, d + gap + w, d);
+    p.shadow(pill, d * 0.5, d * TICK_SHADOW_BLUR, d * TICK_SHADOW_DY, theme::TILE_MARK_SHADOW);
+    crate::icons::draw(p, crate::icons::Icon::Collection, glyph, theme::TILE_MARK_INK);
+    let (cap_t, cap_b) = plx_gfx::text::text_cap_band(sz, 0);
+    let y = glyph.y + d * 0.5 - (cap_t + cap_b) * 0.5;
+    p.text(run.as_ptr(), glyph.x + d + gap, y, sz, theme::TILE_MARK_INK, 0, 0);
+    true
 }
 
 /// Person-glyph box as a fraction of a headshot tile — the [`Art::Person`] fallback's one ratio.
@@ -1801,7 +1899,8 @@ pub fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], meas
 }
 
 /// The identity band shared by both full-bleed heroes. The text run yields room to the
-/// outlined resolution/accessibility chips, and overlong metadata elides within its column.
+/// outlined resolution, dynamic-range and accessibility chips, and overlong metadata elides within
+/// its column.
 /// Returns the width drawn, from `r.x` to the last chip's edge.
 pub fn hero_identity(p: Painter, r: Rect, parts: &[&str], resolution: Option<&str>, chips: &[&str], measure: &dyn plx_machine::machine::Measure) -> f32 {
     identity_row(Some(p), r, parts, resolution, chips, theme::TEXT_SECONDARY, measure)
@@ -1814,10 +1913,10 @@ pub fn hero_identity_w(r: Rect, parts: &[&str], resolution: Option<&str>, chips:
 }
 
 /// Home's metadata band uses brighter reading ink over the hero art and reserves room for the rating.
-pub fn hero_metadata(p: Painter, r: Rect, parts: &[&str], quality: Option<&str>, rating: &str, measure: &dyn plx_machine::machine::Measure) {
+pub fn hero_metadata(p: Painter, r: Rect, parts: &[&str], quality: Option<&str>, range: Option<&str>, rating: &str, measure: &dyn plx_machine::machine::Measure) {
     let rating = (!rating.is_empty() && keyline_chip_w(rating, measure) <= r.w * 0.5).then_some(rating);
-    let chips = rating.as_ref().map_or(&[][..], std::slice::from_ref);
-    identity_row(Some(p), r, parts, quality, chips, theme::TEXT_READING, measure);
+    let chips: Vec<&str> = range.into_iter().chain(rating).collect();
+    identity_row(Some(p), r, parts, quality, &chips, theme::TEXT_READING, measure);
 }
 
 /// The one layout of the identity band, painted with `paint` or only measured without it.
@@ -2907,26 +3006,39 @@ pub(crate) fn chip_face(face: plx_gfx::gfx::GlassFace, e: f32) -> plx_gfx::gfx::
 /// reach they still sample the page, never each other, so they keep one source
 /// (`backdrop::surface_with`).
 ///
-/// **`frozen` is the opener lift's ground** (`lift_profile_chip`, the account menu up): the
-/// capsule then stands on the stack's latched underlay field through `Painter::glass_frozen`, with
-/// the host snapshot behind its rim and no dim (it is drawn above the dim), and requests no
-/// backdrop entry and no blur source pass. It is the LATCHED field's texture, so an unlatched ground
-/// is not representable here: [`lift_profile_chip`] draws no lift at all until the field has latched,
-/// because a flat capsule over the bar's own would darken the chip twice. The chip on the tab strip
-/// passes `None` and keeps the live glass.
+/// **`stand` is the opener lift's ground** ([`lift_profile_chip`], the account menu up): the capsule
+/// then stands on FROZEN pictures through `Painter::glass_frozen` ([`LiftGround`]) and requests no
+/// backdrop entry and no blur source pass. The chip on the tab strip passes `None` and keeps the
+/// live glass.
 fn glass_capsule(
     p: Painter,
     cap: Rect,
     e: f32,
     bar_material: Option<plx_gfx::gfx::GlassFace>,
-    frozen: Option<u32>,
+    stand: Option<LiftGround>,
 ) -> bool {
     let face = match bar_material {
         None => return false,
         Some(f) => chip_face(f, e),
     };
-    if let Some(ground) = frozen {
-        let sharp = crate::popover::host::page_tex().unwrap_or(0);
+    if let Some(stand) = stand {
+        // A GlassFace does not ride the painter's alpha (`popover_glass::face_at`): the lift of a
+        // morphing menu's opener fades, and its rim must fade with it.
+        let face = chip_face(face, p.opacity().clamp(0.0, 1.0));
+        let (ground, sharp, morph) = match stand {
+            // the frosted material: the field behind the body, the snapshot behind the rim
+            LiftGround::Field(field) =>
+                (field, crate::popover::host::page_tex().unwrap_or(0), plx_gfx::gfx::GlassMorph::NONE),
+            // CLEAR glass (`GlassMorph::clear`, which only this lift draws now: a morphing menu's own
+            // glass is frosted on every frame): the body shows the sharp
+            // snapshot through `sharp`, whose window is the one flipped the way the snapshot is held;
+            // the texture in the `ground` slot is only the program's required non-zero binding, and
+            // `u_clear` 1 mixes every texel of it away
+            LiftGround::Snapshot(page) =>
+                (page, page, plx_gfx::gfx::GlassMorph { clear: 1.0, ..plx_gfx::gfx::GlassMorph::NONE }),
+            // the flat capsule below is this ground
+            LiftGround::Flat => return false,
+        };
         return p.glass_frozen(
             cap,
             cap.h * 0.5,
@@ -2936,6 +3048,7 @@ fn glass_capsule(
             [1.0, 1.0, 1.0, e],
             plx_gfx::gfx::GlassRim::Standing,
             face,
+            morph,
         );
     }
     Glass::DYNAMIC_BACKDROP.backdrop(
@@ -3051,15 +3164,14 @@ pub fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expand: f32
     profile_chip_on(p, data, chip_expand, bar_material, None);
 }
 
-/// [`profile_chip_with`] on a chosen ground for its capsule: `frozen` is the latched underlay field
-/// of the modal stack the chip is lifted over ([`lift_profile_chip`]) as its texture, `None` the live
-/// tab-strip glass.
+/// [`profile_chip_with`] on a chosen ground for its capsule: `stand` is what the chip is lifted over
+/// ([`lift_profile_chip`]), `None` the live tab-strip glass.
 fn profile_chip_on(
     p: Painter,
     data: ProfileChipRead<'_>,
     chip_expand: f32,
     bar_material: Option<plx_gfx::gfx::GlassFace>,
-    frozen: Option<u32>,
+    stand: Option<LiftGround>,
 ) {
     let r = CHIP_FRAME;
     let expand = chip_expand;
@@ -3083,7 +3195,7 @@ fn profile_chip_on(
         let cap = chip_cap(e, name_w);
         // the tab track's own material — literally the same material: glass when the track
         // resolved glass this frame, the flat capsule when it did not.
-        if !glass_capsule(p, cap, 1.0, bar_material, frozen) {
+        if !glass_capsule(p, cap, 1.0, bar_material, stand) {
             p.rect_sheened(
                 cap,
                 cap.h * 0.5,
@@ -3158,6 +3270,36 @@ fn profile_chip_on(
     }
 }
 
+/// What the opener lift's capsule stands on ([`lift_ground`]). **Never nothing**: the chrome pass
+/// leaves the chip out from the frame its menu mounts, so the lift is the chip's only copy on every
+/// frame of the open and the close and has to paint on each one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LiftGround {
+    /// The stack's latched underlay field: the frosted material, no live glass and no dim (it is
+    /// drawn above the dim), the host snapshot behind its rim.
+    Field(u32),
+    /// The host snapshot, before the field has latched: the same capsule drawn CLEAR over the
+    /// undimmed page it was taken of (the opener's own cap, which is whole on these frames; the menu's
+    /// glass beside it is frosted, never clear). The field is read
+    /// back from the GPU a frame or two after the menu mounts; the snapshot is taken in the mount
+    /// frame's own page pass, before the lift.
+    Snapshot(u32),
+    /// Neither exists: the flat tab-track capsule, `profile_chip_on`'s own fallback.
+    Flat,
+}
+
+/// **What the lift stands on this frame, decided where it paints**: the latched `field` once the
+/// stack has one, else the host `snapshot` (`popover::host::page_tex`), else [`LiftGround::Flat`].
+/// A state, not a frame count: the read takes "a frame or two" and may be refused, and the chip is
+/// painted on whichever frames those are.
+pub fn lift_ground(field: &crate::underlay::UnderlayField, snapshot: Option<u32>) -> LiftGround {
+    match (field.ground_tex(), snapshot) {
+        (Some(field), _) => LiftGround::Field(field),
+        (None, Some(page)) => LiftGround::Snapshot(page),
+        (None, None) => LiftGround::Flat,
+    }
+}
+
 /// [`profile_chip_with`], re-drawn above the account menu's scrim AND panel: the lit copy of the
 /// opener the dispatcher's lift pass (`Z::OPENER`, `Dispatcher::lifted_opener`, `Screen::bar_opener`)
 /// asks the rig for (`Rig::lift_bar_member`), the one place any opener is lifted. The control is
@@ -3166,13 +3308,12 @@ fn profile_chip_on(
 /// copy lies exactly on the chip the bar drew.
 ///
 /// **The lift's capsule stands on FROZEN ground** (owner rule, 2026-10-17: no live-refracting glass
-/// over a page): while the menu is up the capsule is `Painter::glass_frozen` over the stack's
-/// latched underlay field, its rim bending the host snapshot, and it requests no backdrop entry or
-/// blur source pass. **Before the field has latched it draws nothing** (CONFIRM2 CB1): the field
-/// latches a frame after the OK that opens the menu, the dim is still 0 on that frame, and the bar's
-/// own chip is already on screen at the same rect — the flat capsule this used to fall back to landed
-/// on top of that one and the chip blinked near-black for a frame on every open. The chip on the tab
-/// strip, with no menu up, stays live glass.
+/// over a page): while the menu is up the capsule is `Painter::glass_frozen`, its rim bending the host
+/// snapshot, and it requests no backdrop entry or blur source pass. What it stands on is chosen HERE,
+/// at paint time ([`lift_ground`]): the stack's latched field, or until that latches the snapshot
+/// drawn clear. **It always paints**: the lift owns the chip from the frame its menu mounts (the chrome
+/// pass leaves it out so the snapshot never holds it), and a frame it drew nothing on was a frame the
+/// chip blinked out. The chip on the tab strip, with no menu up, stays live glass.
 pub fn lift_profile_chip(
     p: Painter,
     data: ProfileChipRead<'_>,
@@ -3180,8 +3321,18 @@ pub fn lift_profile_chip(
     bar_material: Option<plx_gfx::gfx::GlassFace>,
     ground: &crate::underlay::UnderlayField,
 ) {
-    let Some(ground) = ground.ground_tex() else { return };
-    crate::guard(|| profile_chip_on(p, data, chip_expand, bar_material, Some(ground)));
+    lift_profile_chip_on(p, data, chip_expand, bar_material, lift_ground(ground, crate::popover::host::page_tex()));
+}
+
+/// [`lift_profile_chip`] on a chosen ground, for a test to state the frame's.
+pub(crate) fn lift_profile_chip_on(
+    p: Painter,
+    data: ProfileChipRead<'_>,
+    chip_expand: f32,
+    bar_material: Option<plx_gfx::gfx::GlassFace>,
+    stand: LiftGround,
+) {
+    crate::guard(|| profile_chip_on(p, data, chip_expand, bar_material, Some(stand)));
 }
 
 // ---- CircleButton: circular disc + centered glyph, same keyed/unkeyed ControlStyle family as
@@ -3225,6 +3376,9 @@ pub struct CircleButton {
     pub frame: Rect,
     pub glyph: *const c_char,
     pub icon: Option<crate::icons::Icon>, // vector glyph; overrides the text glyph when set
+    /// Whether the control can act: a disabled disc wears the disabled ink and never the focused
+    /// face, whatever order the builder ran in ([`CircleButton::enabled`]).
+    pub enabled: bool,
     pub focused: bool,
     /// Focus PROGRESS 0..1 when driven off a spring ([`CircleButton::focus_mix`]); `None` is the
     /// plain binary [`focused`](Self::focused).
@@ -3252,6 +3406,7 @@ impl CircleButton {
             glyph,
             icon: None,
             fill: None,
+            enabled: true,
             focused: false,
             focus: None,
             style: ControlStyle::Accent,
@@ -3300,6 +3455,15 @@ impl CircleButton {
         self.focused = f;
         self
     }
+    /// A disc that cannot act: the disabled ink ([`theme::INK_DISABLED`]), and never the focused
+    /// face whatever order the two are set in — [`Button::enabled`]'s and
+    /// [`TransportButton::enabled`]'s own rule, so a disabled disc reads the same on every row.
+    /// A disabled control owns no focus stop (`focus::next_enabled_index`), so the caller that
+    /// disables one also keeps focus off it. Defaults to enabled.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
     /// Draw the focus fill at progress `t` (0..1) — normally [`CtlPop::focus`], the lift spring —
     /// instead of the binary [`focused`](Self::focused); see [`ControlStyle::face_at`].
     pub fn focus_mix(mut self, t: f32) -> Self {
@@ -3309,7 +3473,15 @@ impl CircleButton {
     }
     /// The face this disc draws now.
     fn face_now(&self) -> ControlFace {
-        self.style.face_at(self.focus.unwrap_or(f32::from(self.focused)), self.ground, self.palette)
+        let mut face = self.style.face_at(
+            if self.enabled { self.focus.unwrap_or(f32::from(self.focused)) } else { 0.0 },
+            self.ground,
+            self.palette,
+        );
+        if !self.enabled {
+            face.ink = theme::INK_DISABLED;
+        }
+        face
     }
     /// The [FOCUS POP](CTRL_FOCUS_SCALE), about the control's centre — normally
     /// [`CtlPop::scale`], which already folds the press dip in. `1.0` is the resting control, which
@@ -3445,14 +3617,15 @@ impl View for CircleButton {
         // capsule, and `face_box`/`face_outline` pick that up from the shape rather than from a
         // flag — at rest both are no-ops on a circle.
         let plate = face_box(r);
-        if self.focused {
+        let focused = self.enabled && self.focused;
+        if focused {
             control_cast_at(p, plate, plate.h * 0.5, self.focus.unwrap_or(1.0));
         }
         let glass = self.ground == ControlGround::Keyed
             && glass_capsule(p, plate, 1.0, self.glass, None);
         if !glass {
-            control_rim(p, plate, plate.h * 0.5, face.top, face.body, self.focused, self.ground);
-        } else if self.focused {
+            control_rim(p, plate, plate.h * 0.5, face.top, face.body, focused, self.ground);
+        } else if focused {
             let focus = self.focus.unwrap_or(1.0);
             let bright = self.style.face_at(1.0, self.ground, self.palette);
             control_rim(p.alpha(focus), plate, plate.h * 0.5, bright.top, bright.body, true, self.ground);
@@ -4272,6 +4445,10 @@ pub fn art_wash_split(r: Rect, art: Rect) -> Option<(Rect, [Option<Rect>; 4])> {
         ],
     ))
 }
+
+/// A Live TV channel's tile face (a plate, a contained logo, the number): [`Art::Channel`]'s draw.
+#[path = "widgets_channel_tile.rs"]
+pub mod channel_tile;
 
 // ---- PageGround: the item-keyed ground a BROWSING screen stands on. ----
 
@@ -6802,6 +6979,9 @@ pub const TAB_KEY_CHIP: u32 = crate::dispatch::STRIP_BASE + 4;
 /// BEFORE Search in the strip's visual order (`app::chrome::strip_keys`) — a key is a destination's
 /// identity, never its position.
 pub const TAB_KEY_WATCHLIST: u32 = crate::dispatch::STRIP_BASE + 5;
+/// The Live TV pill, `+6`: appended after the Watchlist's `+5`, so no existing key moves; drawn
+/// after the library type pills (`app::chrome::strip_keys`).
+pub const TAB_KEY_LIVETV: u32 = crate::dispatch::STRIP_BASE + 6;
 /// The top chrome band's y — the chip and the pills sit on it (Home and Library alike).
 ///
 /// **Derived from the overscan safe area, not chosen.** It was a bare `44.0` until 2026-08-23, which
@@ -9810,4 +9990,17 @@ fn button_progress_ring_uses_bounded_quadrants_and_leaves_the_default_face_uncha
     let plain = crate::draw_census::capture(|| make().draw(&Env::inert(), Painter::recording()));
     let zero = crate::draw_census::capture(|| make().progress_ring(0.0).draw(&Env::inert(), Painter::recording()));
     assert_eq!(plain, zero, "zero progress adds no geometry or alternate resting face");
+}
+
+/// A channel plate asks for its logo as a PNG (the transparent ground is the mark's), a poster for a JPEG.
+#[cfg(test)]
+#[test]
+fn a_channel_logo_is_requested_as_a_png_and_every_other_card_art_as_a_jpeg() {
+    let logo = Art::Channel { sid: 3, logo: "/logos/7.png", number: "7", name: "Seven" };
+    let asked = card_art_request(&logo).expect("a logo is asked for");
+    assert_eq!((asked.srv, asked.path, asked.png), (3, "/logos/7.png", true));
+    assert_eq!((asked.w, asked.h), channel_tile::LOGO_RES);
+    let thumb = card_art_request(&Art::Thumb { sid: 3, key: "/t/1", res: (10, 10) }).unwrap();
+    assert!(!thumb.png);
+    assert_eq!(card_art_request(&Art::Poster(None)), None);
 }

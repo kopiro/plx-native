@@ -753,7 +753,7 @@ world-readable `/tmp` on the TV across many runs.
   crash log, but the default hook prints the raw message to stderr, so a future `unwrap()` on an
   `Err` that embeds a URL or token would still land there verbatim. Two things could not be settled without the
   television: whether LG's SDL logs committed keyboard text at `SDL_LOG_CATEGORY_INPUT` /
-  `SDL_LOG_PRIORITY_DEBUG`, which `textinput::trace_driver` enables in every build (the five
+  `SDL_LOG_PRIORITY_DEBUG`, which `plx_shell_sdl::text::trace_driver` (called from `textinput::bind`) enables in every build (the five
   message formats the driver is documented to print carry a state number, never text), and what
   the closed TV libraries (libplayerAPIs, libAcbAPI, libpf) write to fd 2.
 
@@ -1680,9 +1680,15 @@ are exactly 1920×1080. Captured on the panel: full-bleed, no letterbox, no crop
 the first sample and handing straight to the UI with no black frame at 2.8 s sampling.
 
 LG's "the splash screen should not be black" line is not enforced — **Apple TV's own splash is
-99.5 % pure black**; ours is 66 %.
+99.5 % pure black**. Ours is pure black too (97 % of its pixels are #000000, 2026-11-25): an OLED
+panel switches a #000000 pixel fully off, so the field behind the logo stays dark instead of
+glowing faintly grey while the app boots.
 
-The master arrives at 1672×941, so the script resamples (LANCZOS, 1.148×). Measured cost: none
+`assets/splash-master.png` is already the shipped artwork, so cut it WITHOUT `--splash-lift`: that
+option exists for a non-black splash, and passing it would undo the OLED black field.
+
+The master is exported at 1920×1080, so the script copies it at size. A 16:9 master of another size
+is resampled (LANCZOS); the first master arrived at 1672×941 and its 1.148× resample cost nothing
 detectable — 1 px 10–90 % edge transition and full contrast on both sides, because the art is
 vector-derived with hard edges. It refuses a master that is not 16:9 rather than letterboxing.
 

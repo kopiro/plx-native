@@ -2,8 +2,66 @@
 
 `tests/fixtures/replay/v13-owned-input-content` is a new synthetic recording, not a rewrite of an older golden. The actual simulator's `--write-synthetic-initial` producer and product recorder captured Filmography → Detail → Back → Back. The official `tools/plxnative-rec check` and `import` accepted the unchanged capture. The imported manifest adds only `anchor: true`; its recorded initial state, hash, fingerprint and segment bytes remain the producer's.
 
-Targets and Resolve each replayed all 1,216 recorded frames and grades with raw exit 0, `verdict=SAME`, and all eight difference counters zero. Current V13 recordings must continue to replay; an unsupported current or unknown profile is never an expected refusal.
+Targets and Resolve each replay all 892 recorded frames with raw exit 0, `verdict=SAME`, and all eight difference counters zero. Current V13 recordings must continue to replay; an unsupported current or unknown profile is never an expected refusal.
 
 The four pre-V13 recordings remain byte-for-byte unchanged, including the historical fixture whose directory ends in `-current`. `tests/replay-historical-profiles.json` binds the reviewed schema-3 fingerprints 4239819007634745513 and 13512213413816145485 to their exact manifest and segment SHA-256 values. Only these fully parsed immutable artifacts receive the typed early refusal `incompatible owner-input/presentation state; requires V13 capture`. The diagnostic grants no old-profile replay authority. Unknown, modified, malformed, truncated and extra-field artifacts cannot earn an expected refusal.
 
-The shared CI replay driver executes all five recordings in both modes: two current SAME outcomes and eight separately counted historical expected refusals. Generic errors, crashes, late bootstrap output, incomplete grades and nonzero difference counters remain failures.
+The shared CI replay driver executes all six recordings in both modes: four current SAME outcomes (this anchor and `13-by-id-filmography`, two modes each) and eight separately counted historical expected refusals. Generic errors, crashes, late bootstrap output, incomplete grades and nonzero difference counters remain failures.
+
+**Re-recorded 2026-11-17** (route pages share one anatomy: every route title, Filmography's
+included, is the 48 Settings title instead of the 72 hero). The recorded behaviour changed without
+moving the shape (`state_fp` 16894190109976774341): the committed anchor was observed being refused
+in both modes (`replay: REFUSED — replay measurement table miss`, the title measured at a rung the
+recording never measured). The flow's keys are unchanged. The anchor was recorded afresh
+(`tests/focusfp.sh --rec --only 12`, the old fixture removed, `plxnative-rec import`, `anchor: true`
+restored; the manifest differs only in the initial-state hash and the mock's port), and the CI driver
+(`tests/replay_fixtures.py`, all five recordings) replayed it SAME in Targets and Resolve on three
+consecutive runs, 1,172 frames graded, every difference counter zero. The pinned digests in
+`tests/test_harness.py` follow the new bytes.
+
+**Re-recorded again 2026-11-17, with the by-id family** (the runtime half of the accessibility
+identifiers, #1432). `InputKind::ById` and its `Id` resolution row moved the recorded shape
+(`state_fp` 16894190109976774341 `0xea74_3865_5115_46c5` -> 9159521251572352515
+`0x7f1d_280c_909c_8603`): the committed anchor was observed being refused (`replay: REFUSED --
+invalid or incompatible recording`), so it was recorded afresh the same way (`tests/focusfp.sh
+--rec --only 12`, `plxnative-rec import`, `anchor: true` restored; the manifest differs only in the
+fingerprint, the initial-state hash and the mock's port), and the CI driver replayed it SAME in
+Targets and Resolve, 922 frames graded, every difference counter zero. The outbound guard's and the
+tool's `CURRENT_FP` moved with it, and the pinned digests in `tests/test_harness.py` follow the new
+bytes. No frame hash was edited by hand.
+
+`tests/fixtures/replay/13-by-id-filmography` is the one fixture that drives the by-id tokens
+(`tests/focusfp.sh` flow 13: Flow 12's Filmography page, then `focus:nav.watchlist`,
+`focus:filmography.row.3` and `press:filmography.row.0`, no `@subject`, four BACK keys down to Home,
+and `focus:nav.watchlist` again). It is an anchor and replays SAME in both modes, 1,209 frames, on
+three consecutive runs. The first `focus:nav.watchlist` is REFUSED on purpose: the Filmography page
+owns input and has no tab strip, so `a11y: refused focus nav.watchlist unknown owner=filmography` is
+recorded, and it is the one by-id refusal `ALPHABET.json` lists, literally (`refusal` 1 on its `Id`
+row). `focus:filmography.row.3` and the press resolve (`refusal` 0; the press is the ordinary OK
+Down/Up on the first credit row and opens Detail exactly as Flow 12's `down ok` does), and the last
+`focus:nav.watchlist` resolves on Home to the strip's Watchlist tab. The unwinding to Home records the
+Person store's `close`, which `ALPHABET.json` lists as the `PersonCmd::Close` encoding.
+
+Pressing a Home element (`press:nav.profile`, `press:nav.movies`, `press:home.hero.info`) aborts the
+controlled recording with `replay: REFUSED -- unsupported Home application effect`, so no press is
+recorded on Home. The recording is also kept short, one second between the BACKs: the loader's
+decoded-recording budget (`rec/strict_json.rs`, `Budget`) refused a 1.5 MB take at load
+(`record JSON/budget`, line 13918 of 15444 -- the replay's generic `invalid or incompatible
+recording`), because Home frames cost about 100 KB per 100 frames.
+
+**Re-recorded for Filmography Watchlist (#1418).** The item-menu argument adds a catalog ID,
+moving the V13 census to `16067387704449319837`. Both current anchors were recorded with the
+synthetic simulator using `tests/focusfp.sh --rec --only 12,13` and installed with
+`plxnative-rec rerecord`. Targets and Resolve each grade 614 frames for
+`v13-owned-input-content` and 792 for `13-by-id-filmography`, with all difference counters at zero.
+The four historical fixtures still receive their expected refusal in both modes.
+
+**Re-recorded for Live TV (#993) with Filmography Watchlist.** The current V13 producer fingerprint is `8363262880582770195`. The synthetic flows from `tests/focusfp.sh --rec --only 12,13` have 609 and 785 frames, respectively. The historical fixture bytes and their refusal allowlist are preserved.
+
+**Re-recorded for the Live TV What's on page.** The Live TV screen's shape now lists its Recent channels, so the screen census moved (`SCREEN_SHAPES_PIN` `0x17bd_9205_2e59_cd6e` -> `0x6353_575b_3c41_8806`) and the current V13 producer fingerprint is `2884821880834123965`. Both current anchors were observed refused on the old bytes and recorded afresh (`tests/focusfp.sh --rec --only 12,13`, installed with `plxnative-rec rerecord`, `anchor: true` kept; the manifests differ only in the fingerprint and the mock's port). Targets and Resolve each grade 925 frames for `v13-owned-input-content` and 1210 for `13-by-id-filmography`, with every difference counter at zero. The four historical fixtures are untouched and still receive their expected refusal; `tools/plxnative-rec`, the outbound guard and `tests/test_harness.py` carry the new fingerprint and digests.
+
+**Re-recorded for the What's on page's Channels shelf.** The Live TV screen's stack now has a third shelf (the lineup channels with no programme on that are not in Recent, so every channel stays reachable until the Guide and Browse pages), so the screen census moved (`SCREEN_SHAPES_PIN` `0x6353_575b_3c41_8806` -> `0x16f9_ab79_9300_dc0a`) and the current V13 producer fingerprint is `13368307521658900119` (`0xb985_c4dc_d4a9_4e97`). Both current anchors were observed refused on the old bytes (`replay: REFUSED -- invalid or incompatible recording`, `tests/replay_fixtures.py`) and recorded afresh (`tests/focusfp.sh --rec --only 12,13`, installed with `plxnative-rec rerecord`, `anchor: true` kept; the manifests differ only in the fingerprint). The CI driver replayed them SAME in Targets and Resolve on three consecutive runs, 919 frames for `v13-owned-input-content` and 1138 for `13-by-id-filmography`, every difference counter zero; the four historical fixtures are untouched and still receive their expected refusal. `tools/plxnative-rec`, the outbound guard and `tests/test_harness.py` carry the new fingerprint and digests.
+
+**Re-recorded for the hero row (PR #1553, owner-approved design VER · FINAL; merged with main's Live TV pages).** The current V13 producer fingerprint is `12734002143041661619` (census `0xb0b8_437b_410f_aab3`, `SCREEN_SHAPES_PIN` `0xa2bc_fa1b_e96e_0118`): the item menu's `Action::Hero(HeroCtl)` replaced `Action::ChooseTracks` (canon tag 14 and its `SHAPE` string changed), the screen shapes gained the Audio & Subtitles panel (`PreplayPanel`) and the item menu's hero overflow (`HeroOverflow{rows:len}`), and main's What's on page and Channels shelf moved the Live TV shapes before this branch merged them in. The synthetic flows from `tests/focusfp.sh --rec --only 12,13` have 907 and 1204 frames, respectively. Both anchors replay `verdict=SAME` in Targets and Resolve with every difference counter zero (`tests/replay_fixtures.py`); the old fixtures are refused at the shape gate (census mismatch), so no divergence record could exist for them: this is `rerecord`, not a rebaseline (`anchor: true` kept). The tool's `CURRENT_FP`, the outbound guard's and the pinned digests in `tests/test_harness.py` moved with it.
+
+**Re-recorded for the shelf's recorded library on top of the hero row (2026-11-26).** Two changes met in one merge, and each alone moved the shape. Main's hero row (#1553, above) had moved the current V13 producer fingerprint to `12734002143041661619` (`0xb0b8_437b_410f_aab3`). This PR's `record::SHAPE` then gained `library:Option<Mixed|{One:i64}>`, so a recorded shelf carries the library its row was decided for (the frozen session-codec census keeps the record shape it was graded under, `PRE_LIBRARY_RECORD_SHAPE`), and the merged code computes `15567541324829359259` (`0xd80b_045a_c4aa_fc9b`). Separately, with the shape unmoved, the Home roster's key (`BrowseScope::cache_key`) now folds Browse's household verdicts even before a pin table exists, so the verdict landing republishes Home's catalog once more than before; that is a behaviour change with no shape change, which `rebaseline` would refuse for an anchor, and the shape bump is what makes `plxnative-rec rerecord` the right verb. Both anchors were recorded on the merged tree with `tests/focusfp.sh --rec --only 12,13` and installed with `plxnative-rec rerecord` (`anchor: true` kept). Targets and Resolve each grade 892 frames for `v13-owned-input-content` and 1304 for `13-by-id-filmography` (the counts follow the recording host's tick pace, not the flow), every difference counter zero. The earlier fingerprints stay as refused entries in `tests/test_harness.py`; the pins (`tools/plxnative-rec`, `.claude/hooks/outbound-guard.py`, `tests/test_harness.py`, `tests/test_replay_fixtures.py`) and the SHA-256 digests moved with it, and `ALPHABET.json` admits the one new string, the enum variant `Mixed`.

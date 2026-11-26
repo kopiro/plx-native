@@ -57,15 +57,16 @@ use std::os::raw::c_int;
 use plx_data::pms::{MediaVersion, PmsMovie};
 use plx_media::route::DeckPress;
 use crate::registry::{tile_facts, RepeatGate, PANEL_REPEAT_MS};
-use crate::registry::{AppFx, AppLike, ItemMenuArg, ItemMenuKind, ItemMenuReq};
+use crate::registry::{hero_face, AppFx, AppLike, AppMsg, HeroCtl, ItemMenuArg, ItemMenuKind, ItemMenuReq};
 use plx_ui::consts::*;
 use plx_ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use plx_ui::frame::Budget;
 use plx_ui::icons::Icon;
 use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
-    LogicalState, Machine, NavOp,
+    LogicalState, Machine, NavOp, MachineId, Delivery,
 };
+use plx_ui::a11y::{A11y, A11yPath, Role};
 use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step, Stop,
@@ -120,12 +121,18 @@ pub enum Action {
     /// tab pulse. (`GoToCatalog` / `WatchlistRemove` above stay discover-guid keyed: the hex is
     /// the guid's tail, `plx_data::watchlist::decode_hex`.)
     WatchlistAdd { hex: [u8; 12] },
-    /// Play Version…: turn the panel into the list of this leaf's versions. The menu performs
+    /// Select Version…: turn the panel into the list of this leaf's versions. The menu performs
     /// it itself (`ItemMenuScreen::activate`); it never reaches the app.
     ChooseVersion(String),
-    /// Play this leaf's version `media`, resuming as Play does. The id, never a position: the app
-    /// resolves it against the item it fetches (`plx_plex::plex::Metadata::media_version`).
-    PlayVersion { rk: String, media: plx_plex::plex::MediaId },
+    /// A hero action under the Detail page's … menu: the row IS the round button it replaces, so the
+    /// action is that [`HeroCtl`]. The menu closes and hands it back to the page that opened it
+    /// (`AppMsg::HeroCtl`), whose `activate_hero` performs it; it never reaches the app.
+    Hero(HeroCtl),
+    /// Select this leaf's version `media` as the file Play and Resume start. It plays nothing; the
+    /// app remembers it for the profile (`plx_media::route::choose_version`). The id, never a
+    /// position: it is resolved against the item when it is played
+    /// (`plx_plex::plex::Metadata::media_version`).
+    SelectVersion { rk: String, media: plx_plex::plex::MediaId },
 }
 
 impl Action {
@@ -149,7 +156,7 @@ impl Action {
     /// Does the action name what it acts on? A ratingKey-keyed action needs a non-empty key; a
     /// catalog-keyed [`Action::WatchlistAdd`] carries its 12-byte id instead and has no key.
     pub fn has_subject(&self) -> bool {
-        matches!(self, Action::WatchlistAdd { .. }) || !self.rk().is_empty()
+        matches!(self, Action::WatchlistAdd { .. } | Action::Hero(_)) || !self.rk().is_empty()
     }
 
     /// The ratingKey this action acts on.
@@ -166,17 +173,17 @@ impl Action {
             | Action::GoToCatalog(rk)
             | Action::WatchlistRemove(rk)
             | Action::ChooseVersion(rk) => rk,
-            Action::PlayVersion { rk, .. } => rk,
+            Action::SelectVersion { rk, .. } => rk,
             Action::PlayTrailer { rk, .. } => rk,
-            // No ratingKey: the subject is a catalog id.
-            Action::WatchlistAdd { .. } => "",
+            // No ratingKey: the subject is a catalog id, or (a hero control) the page that opened the menu.
+            Action::WatchlistAdd { .. } | Action::Hero(_) => "",
         }
     }
 
     fn write(&self, c: &mut Canon) {
         // The tags are the recorded shape's (`SHAPE`); 0 was the retired `None` sentinel.
         let tag = match self {
-            Action::Delete(_) => 14,
+            Action::Delete(_) => 15,
             Action::GoToItem(_) => 1,
             Action::GoToShow(..) => 2,
             Action::MarkWatched(_) => 3,
@@ -189,7 +196,9 @@ impl Action {
             Action::WatchlistRemove(_) => 10,
             Action::WatchlistAdd { .. } => 11,
             Action::ChooseVersion(_) => 12,
-            Action::PlayVersion { .. } => 13,
+            // Tag 13 was `PlayVersion` when it was recorded; the wire is unchanged by what a press MEANS.
+            Action::SelectVersion { .. } => 13,
+            Action::Hero(_) => 14,
         };
         c.u32(tag).str(self.rk());
         if let Action::WatchlistAdd { hex } = self {
@@ -198,8 +207,11 @@ impl Action {
         if let Action::GoToShow(_, season) = self {
             c.u32(*season as u32);
         }
-        if let Action::PlayVersion { media, .. } = self {
+        if let Action::SelectVersion { media, .. } = self {
             c.u64(media.0 as u64);
+        }
+        if let Action::Hero(ctl) = self {
+            c.u32(ctl.elem());
         }
         if let Action::PlayTrailer {
             part,
@@ -226,8 +238,10 @@ const CARD_GAP: f32 = theme::space::MD;
 const EDGE: f32 = theme::space::XL;
 const EDGE_X: f32 = plx_ui::consts::MARGIN_X;
 
+/// `media:u64(PlayVersion only)` is the pinned spelling of tag 13's payload, which `Action::SelectVersion` keeps:
+/// renaming what a press MEANS changes neither the canonical bytes nor the shape (`SCREEN_SHAPES_PIN`).
 pub const SHAPE: &str =
-    "ItemMenu{arg:ItemMenuArg,acts:[Option<Action{tag:u32,rk:str,season:u32,part:str,vcodec:str,acodec:str,title:str,hex:str(WatchlistAdd only),media:u64(PlayVersion only)}>],sel:i32,\
+    "ItemMenu{arg:ItemMenuArg,acts:[Option<Action{tag:u32,rk:str,season:u32,part:str,vcodec:str,acodec:str,title:str,hex:str(WatchlistAdd only),media:u64(PlayVersion only),ctl:u32(Hero only)}>],sel:i32,\
      table:TableViewMotion,deletion:{phase:u32,title:str,open:bool,choice:u32,scroll:u32,result:Option<u32>,request:Option<sid:u32,rk:str,kind:u32,show_rk:str,profile:u32,instance:u32,token:u32,grant:u32>}}";
 
 /// Is `m` an item the menu has anything to offer? A leaf or a show/season — i.e. everything the
@@ -260,6 +274,8 @@ pub enum ItemRow {
     WatchlistAdd,
     /// Play Version… (a leaf with two or more versions).
     PlayVersion,
+    /// A hero action under the Detail page's … menu, by the control it replaces.
+    Hero(HeroCtl),
     /// One version on the Play Version page, by its position in the list captured at open.
     Version(u16),
 }
@@ -269,6 +285,31 @@ impl ItemRow {
     #[cfg(any(test, feature = "test-support"))]
     pub fn focus_key(self) -> u32 {
         self.key().0
+    }
+}
+
+impl ItemRow {
+    /// This row's accessibility name (`itemmenu.<name>`), a static word the way its key is a static
+    /// number. A `ItemRow::Version` is named by its position instead (`itemmenu.version.<n>`).
+    fn a11y_name(self) -> &'static str {
+        match self {
+            ItemRow::Delete => "delete",
+            ItemRow::GoToItem => "go_to_item",
+            ItemRow::GoToShow => "go_to_show",
+            ItemRow::MarkWatched => "mark_watched",
+            ItemRow::MarkUnwatched => "mark_unwatched",
+            ItemRow::PlayFromStart => "play_from_start",
+            ItemRow::PlayTrailer => "play_trailer",
+            ItemRow::RemoveFromDeck => "remove_from_deck",
+            ItemRow::Play => "play",
+            ItemRow::GoToCatalog => "go_to_catalog",
+            ItemRow::WatchlistRemove => "watchlist_remove",
+            ItemRow::WatchlistAdd => "watchlist_add",
+            ItemRow::PlayVersion => "play_version",
+            // Named by its control in `a11y` (`itemmenu.hero.<ctl>`), which reads the control itself.
+            ItemRow::Hero(_) => "hero",
+            ItemRow::Version(_) => "version",
+        }
     }
 }
 
@@ -288,6 +329,7 @@ impl FormId for ItemRow {
             ItemRow::WatchlistRemove => 10,
             ItemRow::WatchlistAdd => 11,
             ItemRow::PlayVersion => 12,
+            ItemRow::Hero(ctl) => HERO_KEY_BASE + ctl.elem(),
             ItemRow::Version(n) => VERSION_KEY_BASE + u32::from(*n),
         })
     }
@@ -295,6 +337,8 @@ impl FormId for ItemRow {
 
 /// The Play Version page's row keys start here, clear of the fixed rows above.
 const VERSION_KEY_BASE: u32 = 100;
+/// The hero overflow rows' keys start here: the control's own fixed identity ([`HeroCtl::elem`]) past it.
+const HERO_KEY_BASE: u32 = 1000;
 
 /// **Does OK on this Continue Watching card, while OK does not play, open the SHOW's page?** Only
 /// an episode that names its show. `app::input::activate_deck_card` decides the press with it and
@@ -385,10 +429,10 @@ fn build_card(
             // and the episode's own page is what the menu adds
             let ok_opens_show = opens_details && deck_episode_opens_show(m);
             if !opens_details || ok_opens_show {
-                nav.push(go_item(plx_platform::i18n::msg::browse_menu_go_episode()));
+                nav.push(go_item(plx_os::i18n::msg::browse_menu_go_episode()));
             }
             if has_show && !ok_opens_show {
-                nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_show(), &m.show_rk, m.season_index.max(0)));
+                nav.push(go_show(plx_os::i18n::msg::browse_menu_go_show(), &m.show_rk, m.season_index.max(0)));
             }
         }
         // a show or season deck card whose OK opens the page: that page IS the "go to" row's
@@ -396,11 +440,11 @@ fn build_card(
         1 | 2 if opens_details => {}
         // a season has no page of its own — it IS the show page with that season selected, so one
         // row covers it; a show's own page is likewise the only navigation it has
-        2 if has_show => nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_season(), &m.show_rk, m.season_index)),
+        2 if has_show => nav.push(go_show(plx_os::i18n::msg::browse_menu_go_season(), &m.show_rk, m.season_index)),
         2 => {}
-        1 => nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_show(), &m.rk, 0)),
+        1 => nav.push(go_show(plx_os::i18n::msg::browse_menu_go_show(), &m.rk, 0)),
         _ if opens_details => {}
-        _ => nav.push(go_item(plx_platform::i18n::msg::browse_menu_go_movie())),
+        _ => nav.push(go_item(plx_os::i18n::msg::browse_menu_go_movie())),
     }
     // the divider the design groups on — only when there IS a group above it
     let had_nav = !nav.is_empty();
@@ -442,14 +486,14 @@ fn build_card(
         ItemRow::RemoveFromDeck,
         RowKind::Button,
         Action::RemoveFromDeck(m.rk.clone()),
-        Row::new(plx_platform::i18n::msg::browse_menu_remove_deck()).licon(Icon::Close).destructive(true),
+        Row::new(plx_os::i18n::msg::browse_menu_remove_deck()).licon(Icon::Close).destructive(true),
     );
     if let Some(guid) = watchlist_guid {
         sec = sec.item(
             ItemRow::WatchlistRemove,
             RowKind::Button,
             Action::WatchlistRemove(guid.to_string()),
-            Row::new(plx_platform::i18n::msg::watchlist_action_remove()).licon(Icon::Close).destructive(true),
+            Row::new(plx_os::i18n::msg::watchlist_action_remove()).licon(Icon::Close).destructive(true),
         );
     } else {
         // A Watchlist tile's own Remove (above) is the membership row there; everywhere else the
@@ -514,7 +558,7 @@ fn state_rows(
         ItemRow::PlayFromStart,
         RowKind::Button,
         Action::PlayFromStart(rk.to_string()),
-        Row::new(plx_ui::widgets::play_from_start_verb()).licon(Icon::PlayStart),
+        Row::new(plx_ui::widgets::play_from_start_verb()).licon(Icon::Restart),
     )
     // Present only when there is a choice to make: a single-version item plays the one it has.
     .item_if(
@@ -522,7 +566,7 @@ fn state_rows(
         ItemRow::PlayVersion,
         RowKind::Button,
         Action::ChooseVersion(rk.to_string()),
-        Row::new(plx_platform::i18n::msg::browse_menu_play_version()).licon(Icon::Play),
+        Row::new(plx_os::i18n::msg::browse_menu_select_version()).licon(Icon::Collection),
     )
     .item_if(
         playable.is_some(),
@@ -561,6 +605,26 @@ fn state_rows(
 fn build_episode(rk: &str, mark: PosterMark, versions: &[MediaVersion], face: Option<&watchlist::Face>) -> ItemForm {
     let sec = state_rows(FormSection::new(""), rk, mark, true, versions.len() >= 2, None, "");
     Form::new().section(watchlist::push_face(sec, face))
+}
+
+/// **The Detail hero's … menu**: one row per action the round buttons had no room for, in the row's
+/// order. A row wears the SAME icon and verb as its round button (`registry::hero_face`) and a press
+/// hands its [`HeroCtl`] back to the page that opened the menu, which performs it through the one path
+/// its own button takes (`AppMsg::HeroCtl`): Select Version included, so the versions list is the
+/// page's panel, anchored where the menu was, not a second page inside this one.
+fn build_hero_overflow(rows: &[HeroCtl]) -> ItemForm {
+    let mut sec = FormSection::new("");
+    for &ctl in rows {
+        // A control moves under … only if it has a round-button face (`hero::actions` puts Watchlist and
+        // the watch toggle first, and they never move); `overflow_faces_are_total` pins it.
+        let Some((icon, label)) = hero_face(ctl) else {
+            debug_assert!(false, "{ctl:?} has no face, so it cannot be an overflow row");
+            continue;
+        };
+        let label = label.to_str().unwrap_or_default();
+        sec = sec.item(ItemRow::Hero(ctl), RowKind::Button, Action::Hero(ctl), Row::new(label).licon(icon));
+    }
+    Form::new().section(sec)
 }
 
 /// The Watchlist grid's hold menu (plan §1.9): [`self::hold::rows_for`] bound to
@@ -618,13 +682,13 @@ fn build_season(rk: &str, mark: PosterMark, face: Option<&watchlist::Face>) -> I
     Form::new().section(watchlist::push_face(sec, face))
 }
 
-/// **The Play Version page**: the shared version list (`plx_appkit::version_list`), every row a
-/// play of that version of the captured item.
-fn build_versions(rk: &str, versions: &[MediaVersion]) -> ItemForm {
-    Form::new().section(plx_appkit::version_list::section(versions, ItemRow::Version, |v| Action::PlayVersion {
+/// **The Select Version page**: the shared version list (`plx_appkit::version_list`), every row a
+/// choice of that version for the captured item, the one `checked` (the file Play takes now) marked.
+fn build_versions(rk: &str, versions: &[MediaVersion], checked: Option<plx_plex::plex::MediaId>) -> ItemForm {
+    Form::new().section(plx_appkit::version_list::section(versions, ItemRow::Version, |v| Action::SelectVersion {
         rk: rk.to_string(),
         media: v.id,
-    }))
+    }, checked, None))
 }
 
 /// Beside the card, never over it: to its RIGHT by default, flipped to its LEFT when that would run
@@ -724,7 +788,7 @@ impl ItemMenuScreen {
         }
         self.built = true;
         let form = match &self.arg.kind {
-            ItemMenuKind::Detail { .. } => Form::new(),
+            ItemMenuKind::Detail { rows, .. } => build_hero_overflow(rows),
             ItemMenuKind::WatchlistAdd { hex } => build_watchlist_add(*hex),
             ItemMenuKind::Card { row, from_deck } => {
                 let trailer = cached_trailer(self.arg.sid, row, meta);
@@ -734,6 +798,7 @@ impl ItemMenuScreen {
             }
             ItemMenuKind::Episode { mark, versions } => build_episode(&self.arg.rk, *mark, versions, self.face.as_ref()),
             ItemMenuKind::Season { mark, .. } => build_season(&self.arg.rk, *mark, self.face.as_ref()),
+            ItemMenuKind::HeroOverflow { rows, .. } => build_hero_overflow(rows),
             ItemMenuKind::Catalog { state } => {
                 let guid = self.arg.catalog.as_ref().map_or("", |c| c.guid.as_str());
                 let kind = self.arg.catalog.as_ref().map_or(plx_data::watchlist::model::Kind::Movie, |c| c.kind);
@@ -747,7 +812,7 @@ impl ItemMenuScreen {
         let form = if self.deletion.request.is_some() {
             form.section(FormSection::new("").item(ItemRow::Delete, RowKind::Button,
                 Action::Delete(self.arg.rk.clone()),
-                Row::new(plx_platform::i18n::msg::browse_delete_action()).licon(Icon::Trash).danger()))
+                Row::new(plx_os::i18n::msg::browse_delete_action()).licon(Icon::Trash).danger()))
         } else { form };
         self.form.set(form, None);
     }
@@ -789,6 +854,20 @@ impl ItemMenuScreen {
             self.deletion.open();
             return;
         }
+        // The hero's … menu is its round buttons' overflow: a row is a [`HeroCtl`], and the menu closes and
+        // hands it back to the page that owns the hero, anchored on the rect it hung off. The page's
+        // `activate_hero` is the one path (Go to Show, Play from Start, the versions list and the
+        // picker are its panels, never a second copy inside this menu).
+        if let ItemMenuKind::HeroOverflow { opener, .. } | ItemMenuKind::Detail { opener, .. } = &self.arg.kind {
+            fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
+            if let Some(Action::Hero(ctl)) = act {
+                fx.push(Fx::Deliver(
+                    MachineId::Instance(*opener),
+                    Delivery::Screen(ScreenEvent::App(AppMsg::HeroCtl { ctl, anchor: self.arg.anchor })),
+                ));
+            }
+            return;
+        }
         if let Some(Action::ChooseVersion(rk)) = &act {
             self.show_versions(rk);
             return;
@@ -825,13 +904,18 @@ impl ItemMenuScreen {
         }
     }
 
-    /// Replace the rows with the Play Version page, in the same panel. The focused row is gone
-    /// from the new form, so the engine's reconcile seats focus on its opening row, the first
-    /// version.
+    /// Replace the rows with the Select Version page, in the same panel. The focused row is gone
+    /// from the new form, so the engine's reconcile seats focus on its opening row, the one that
+    /// wears the check mark: the version Play takes now (the profile's choice, else what plays
+    /// unasked).
     fn show_versions(&mut self, rk: &str) {
-        let form = build_versions(rk, self.versions());
+        let versions = self.versions();
+        let chosen = plx_media::route::chosen_version(plx_media::route::item_sid(self.arg.sid), rk);
+        let checked = plx_media::route::taken_version(versions, chosen);
+        let opening = checked.and_then(|id| versions.iter().position(|v| v.id == id)).map(|n| ItemRow::Version(n as u16));
+        let form = build_versions(rk, versions, checked);
         self.form.table.compact = false;
-        self.form.set(form, None);
+        self.form.set(form, opening.as_ref());
     }
 
     /// The highlighted row, for the focus probe — a READ of the cursor the engine moves.
@@ -981,6 +1065,31 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
             elem: self.form.selected_key().map_or_else(|| self.opening(), |k| k.0),
         }
     }
+    /// `itemmenu.<row>`: the menu's [`ItemRow`] names its rows (`ItemRow::a11y_name`; a plain word), the Play
+    /// Version page's one row per version `itemmenu.version.<n>`. The label is the row's drawn
+    /// words (read side only). Every row's `subject` is the ratingKey of the item the menu was opened on
+    /// ([`ItemMenuArg::rk`], captured at open): a row (Play, Mark watched, Remove from Deck, a Watchlist
+    /// write) acts on THAT title, so a press names it. A Catalog menu (a Watchlist tile no server holds)
+    /// has no ratingKey, so its rows carry no subject.
+    fn a11y(&self, key: &u32, _: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let index = self.form.index_of_key(RowKey(*key))?;
+        let path = match *self.form.id_at(index)? {
+            ItemRow::Version(n) => A11yPath::new().name("version").index(usize::from(n)),
+            ItemRow::Hero(ctl) => A11yPath::new().name("hero").name(ctl.a11y_name()),
+            row => A11yPath::new().name(row.a11y_name()),
+        };
+        let a = A11y::new(path, Role::Row);
+        let a = match plx_ui::geom::table_row(&self.form.table, index) {
+            Some(row) => a.with_label(row.label.as_str()),
+            None => a,
+        };
+        Some(if self.arg.rk.is_empty() { a } else { a.with_subject(self.arg.rk.as_str()) })
+    }
+    fn a11y_elems(&self, g: GroupId, _: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == GroupId(0) {
+            out.extend(self.focusable());
+        }
+    }
 }
 
 impl<H: AppLike + crate::registry::MetadataLike + crate::registry::ScreenInputsLike> Screen<H> for ItemMenuScreen {
@@ -1076,7 +1185,7 @@ impl LogicalState for ItemMenuScreen {
 /// no longer take `testlock::serial()` either: nothing here drives a live `Spring`, so there is no
 /// process-global dirty flag to contend for.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A catalog row of `kind` in a given watch state, with the flags a real `pms::parse_item`
@@ -1333,6 +1442,37 @@ mod tests {
             Action::GoToShow(rk, season) => assert_eq!((rk.as_str(), season), ("7", 3)),
             _ => panic!("Go to Show must commit GoToShow"),
         }
+    }
+
+    /// The hero's … menu: one row per moved action, in the row's order, each wearing the icon of the
+    /// round button it replaces and committing what that button does. Play Version opens the versions page.
+    #[test]
+    fn the_hero_overflow_menu_mirrors_the_round_buttons_it_replaces() {
+        let rows = [HeroCtl::GoToShow, HeroCtl::Restart, HeroCtl::Version, HeroCtl::AudioSubtitles];
+        let menu = built(super::build_hero_overflow(&rows));
+        assert_eq!(menu.ids(), rows.map(ItemRow::Hero), "a row's identity is its control");
+        for ctl in rows {
+            assert_eq!(menu.action(ItemRow::Hero(ctl)), Action::Hero(ctl), "a row's action is its control");
+        }
+        // The mark and the verb are the round button's, from the one table, not literals of this menu.
+        for (i, ctl) in rows.iter().enumerate() {
+            let (icon, label) = hero_face(*ctl).expect("an overflowable control has a face");
+            let row = &menu.0.table.sections[0].rows[i];
+            assert_eq!((row.licon, row.label.as_str()), (Some(icon), label.to_str().unwrap()), "{ctl:?}");
+        }
+        // two rows or more: the menu never stands for a single item either
+        assert!(menu.ids().len() >= 2);
+    }
+
+    /// The hold / item menu's Play from Start and Play Version rows wear the hero buttons' icons.
+    #[test]
+    fn the_hold_menus_play_rows_wear_the_hero_buttons_icons() {
+        let menu = built(super::build_episode("e", PosterMark::InProgress, &plx_appkit::version_list::sample(), None));
+        let icon = |id: ItemRow| menu.0.index_of(&id).and_then(|i| menu.0.table.sections[0].rows[i].licon);
+        assert_eq!(icon(ItemRow::PlayFromStart), Some(Icon::Restart));
+        assert_eq!(icon(ItemRow::PlayVersion), Some(Icon::Collection));
+        assert_eq!(icon(ItemRow::MarkWatched), Some(Icon::CheckCircleFill));
+        assert_eq!(icon(ItemRow::MarkUnwatched), Some(Icon::MinusCircleFill));
     }
 
     #[test]
@@ -1844,7 +1984,7 @@ mod tests {
 
     #[test]
     fn translated_action_menus_measure_complete_verbs_and_keep_safe_anchors() {
-        use plx_platform::i18n::{LocaleContext, Preference};
+        use plx_os::i18n::{LocaleContext, Preference};
         use plx_machine::machine::Measure;
         struct MenuMeasure;
         impl Measure for MenuMeasure {
@@ -1856,17 +1996,17 @@ mod tests {
             fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
         }
         let measure = MenuMeasure;
-        for preference in plx_platform::i18n::SHIPPED {
+        for preference in plx_os::i18n::SHIPPED {
             let locale = LocaleContext::resolve(preference, None, None, None, None);
             let mut form: FormTable<ItemRow, Action, Infallible> = FormTable::new(crate::registry::BAND);
             form.table.compact = true;
             form.set(Form::new().section(FormSection::new("")
                 .item(ItemRow::MarkWatched, RowKind::Button, Action::MarkWatched("1".into()),
-                    Row::new(plx_platform::i18n::msg::widgets_action_mark_watched_in(&locale)).licon(Icon::CheckCircleFill))
+                    Row::new(plx_os::i18n::msg::widgets_action_mark_watched_in(&locale)).licon(Icon::CheckCircleFill))
                 .item(ItemRow::MarkUnwatched, RowKind::Button, Action::MarkUnwatched("1".into()),
-                    Row::new(plx_platform::i18n::msg::widgets_action_mark_unwatched_in(&locale)).licon(Icon::MinusCircleFill))
+                    Row::new(plx_os::i18n::msg::widgets_action_mark_unwatched_in(&locale)).licon(Icon::MinusCircleFill))
                 .item(ItemRow::RemoveFromDeck, RowKind::Button, Action::RemoveFromDeck("1".into()),
-                    Row::new(plx_platform::i18n::msg::browse_menu_remove_deck_in(&locale)).licon(Icon::Close))), None);
+                    Row::new(plx_os::i18n::msg::browse_menu_remove_deck_in(&locale)).licon(Icon::Close))), None);
             let table = &form.table;
             let width = table.measured_width(&measure);
             if preference == Preference::Be {
@@ -2360,7 +2500,7 @@ mod tests {
     /// whole-pixel advances. No row carries server text; the parent title only rides an action.
     #[test]
     fn every_action_row_fits_the_widest_panel_in_every_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         // The panel hugs its content, so it always fits itself; the widest it may ever grow to
         // ([`MENU_MAX_W`], the shared cap) is the width a verb can actually be held to.
         let widest = MENU_MAX_W;
@@ -2431,10 +2571,10 @@ mod tests {
         assert!(built(super::build_episode("1", PosterMark::None, &sample_versions(), None)).offers(ItemRow::PlayVersion));
     }
 
-    /// Play Version… does not leave the panel: it becomes the version list, and a version row
-    /// reports a play of THAT version's id for the row the menu captured.
+    /// Select Version… does not leave the panel: it becomes the version list, and a version row
+    /// reports a SELECTION of THAT version's id for the row the menu captured.
     #[test]
-    fn play_version_lists_the_versions_and_a_row_plays_its_id() {
+    fn select_version_lists_the_versions_and_a_row_selects_its_id() {
         let m = versioned(3);
         let mut s = ItemMenuScreen::new(EntryId(7), card_arg(&m, false));
         s.built = true;
@@ -2454,15 +2594,18 @@ mod tests {
         assert_eq!(
             rows,
             [
-                Action::PlayVersion { rk: "42".into(), media: plx_plex::plex::MediaId(3082) },
-                Action::PlayVersion { rk: "42".into(), media: plx_plex::plex::MediaId(3086) },
+                Action::SelectVersion { rk: "42".into(), media: plx_plex::plex::MediaId(3082) },
+                Action::SelectVersion { rk: "42".into(), media: plx_plex::plex::MediaId(3086) },
             ],
             "one row per version, in the server's order",
         );
-        assert_eq!(s.opening(), first_action(&s, |a| matches!(a, Action::PlayVersion { .. })), "focus reseats on the first");
-        let second = first_action(&s, |a| matches!(a, Action::PlayVersion { media, .. } if media.0 == 3086));
+        let checked: Vec<bool> = s.form.table.sections.iter().flat_map(|sec| sec.rows.iter()).filter(|r| !r.is_note()).map(|r| r.checked).collect();
+        assert_eq!(checked.iter().filter(|c| **c).count(), 1, "exactly one row wears the check: the file Play takes now");
+        let marked = checked.iter().position(|c| *c).expect("a marked row") as u16;
+        assert_eq!(s.opening(), ItemRow::Version(marked).focus_key(), "focus reseats on the marked row");
+        let second = first_action(&s, |a| matches!(a, Action::SelectVersion { media, .. } if media.0 == 3086));
         let req = commit(&mut s, second);
-        assert_eq!(req.act, Action::PlayVersion { rk: "42".into(), media: plx_plex::plex::MediaId(3086) });
+        assert_eq!(req.act, Action::SelectVersion { rk: "42".into(), media: plx_plex::plex::MediaId(3086) });
         assert_eq!(req.item.map(|r| r.rk), Some("42".into()), "the captured row rides with it");
     }
 
@@ -2516,7 +2659,7 @@ mod tests {
     #[test]
     fn the_catalog_menus_go_row_names_the_kind() {
         use plx_data::watchlist::model::{Kind, TileState};
-        let _guard = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let _guard = plx_os::i18n::language_on_this_thread_for_test(plx_os::i18n::Preference::En);
         let label = |kind| {
             let menu = built(super::build_catalog(TileState::Available, kind, "42", "plex://movie/abc", plx_data::catalog::Membership::On));
             menu.0.table.sections.iter().flat_map(|s| s.rows.iter()).next().map(|r| r.label.to_string())
@@ -2528,7 +2671,7 @@ mod tests {
     #[test]
     fn the_catalog_menu_fits_in_every_language() {
         use plx_data::watchlist::model::TileState;
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        use plx_os::i18n::{language_on_this_thread_for_test, SHIPPED};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
         let mut out = Vec::new();
         for language in SHIPPED {
@@ -2544,5 +2687,175 @@ mod tests {
             }
         }
         plx_ui::table::assert_no_fit_failures(&out);
+    }
+
+    /// **Audio & Subtitles under …** closes the menu and hands the request back to the page that opened
+    /// it, anchored on the rect the menu hung off: the picker is the page's panel, not a second copy
+    /// inside the menu, so nothing reaches the app runner.
+    #[test]
+    fn every_overflow_row_closes_the_menu_and_hands_its_control_back_to_the_page() {
+        let anchor = [10.0f32, 20.0, 64.0, 64.0].map(f32::to_bits);
+        let rows = vec![HeroCtl::GoToShow, HeroCtl::Restart, HeroCtl::Version, HeroCtl::AudioSubtitles];
+        for (n, want) in rows.iter().enumerate() {
+            let mut arg = card_arg(&item(3, PosterMark::None), false);
+            arg.anchor = anchor;
+            arg.kind = ItemMenuKind::HeroOverflow { rows: rows.clone(), opener: plx_machine::machine::InstanceId(4) };
+            let mut s = ItemMenuScreen::new(EntryId(7), arg);
+            s.built = true;
+            s.form.set(build_hero_overflow(&rows), None);
+            let elem = s.form.key_at(n).expect("a row").0;
+            let mut out = Vec::new();
+            let mut present = plx_machine::present::Present::new();
+            let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(8)), &mut present);
+            s.activate::<HostFixture>(elem, &mut fx);
+            assert!(out.iter().any(|e| matches!(e.fx, Fx::Nav(NavOp::Dismiss(EntryId(7))))), "{want:?}: the menu closes");
+            assert!(
+                out.iter().any(|e| matches!(
+                    &e.fx,
+                    Fx::Deliver(
+                        MachineId::Instance(plx_machine::machine::InstanceId(4)),
+                        Delivery::Screen(ScreenEvent::App(AppMsg::HeroCtl { ctl, anchor: got })),
+                    ) if ctl == want && *got == anchor
+                )),
+                "{want:?}: the opening page is handed the control on the menu's anchor"
+            );
+            assert!(!out.iter().any(|e| matches!(e.fx, Fx::App(AppFx::ItemMenu(_)))), "nothing reaches the app runner");
+        }
+    }
+
+    /// A leaf with three versions, its card menu built (so Play Version is a row).
+    fn leaf_menu_with_versions() -> ItemMenuScreen {
+        let m = versioned(3);
+        let mut s = ItemMenuScreen::new(EntryId(7), card_arg(&m, false));
+        s.built = true;
+        s.form.set(build_card(&m, false, DeckPress::Play, None, None, None), None);
+        s
+    }
+
+    /// Press Play Version: the menu's second page, one row per version.
+    fn open_play_version_page(s: &mut ItemMenuScreen) {
+        let choose = first_action(s, |a| matches!(a, Action::ChooseVersion(_)));
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        let mut fx = Effects::new(
+            &mut out,
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(8)),
+            &mut present,
+        );
+        s.activate::<HostFixture>(choose, &mut fx);
+    }
+
+    /// The item menu on a leaf with versions, both pages (the rows, then Play Version's), run
+    /// through the id conformance (`AppArg::ItemMenu`; the coverage table calls this).
+    pub(crate) fn item_menu_conforms() -> plx_ui::a11y::Namespaces {
+        let mut s = leaf_menu_with_versions();
+        let mut namespaces = vec![with_cx(|cx| plx_ui::a11y::conform::<HostFixture, _>(&s, cx))];
+        open_play_version_page(&mut s);
+        namespaces.push(with_cx(|cx| plx_ui::a11y::conform::<HostFixture, _>(&s, cx)));
+        namespaces
+    }
+
+    /// **The accessibility ids:** every row a menu can show is named by its `ItemRow` (the menu is
+    /// `itemmenu.<row>`), the Play Version page's rows by position (`itemmenu.version.<n>`), and
+    /// the whole view conforms: every row projects, the ids are unique, and each id finds its row.
+    #[test]
+    fn rows_are_named_by_their_item_row_and_conform() {
+        use plx_ui::a11y::A11yPath;
+        use plx_ui::a11y::conform;
+        let mut s = leaf_menu_with_versions();
+        with_cx(|cx| {
+            conform::<HostFixture, _>(&s, cx);
+            let play = A11yPath::parse_relative("play_version").expect("a plain row name");
+            let key = Focusable::<HostFixture>::a11y_find(&s, &play, cx).expect("a leaf with two versions offers Play Version");
+            assert_eq!(key, ItemRow::PlayVersion.focus_key());
+            let a = Focusable::<HostFixture>::a11y(&s, &key, cx).unwrap();
+            assert_eq!(a.role, plx_ui::a11y::Role::Row);
+            assert!(a.label.is_some_and(|l| !l.is_empty()), "the row's drawn words");
+        });
+
+        open_play_version_page(&mut s);
+        with_cx(|cx| {
+            conform::<HostFixture, _>(&s, cx);
+            for n in 0..2u16 {
+                let id = A11yPath::parse_relative(&format!("version.{n}")).unwrap();
+                let key = Focusable::<HostFixture>::a11y_find(&s, &id, cx).expect("one row per version");
+                assert_eq!(key, ItemRow::Version(n).focus_key());
+            }
+        });
+    }
+
+    /// Every row's `(id, subject)` of the menu as it stands, in listing order.
+    fn row_subjects(s: &ItemMenuScreen) -> Vec<(String, Option<String>)> {
+        with_cx(|cx| {
+            let mut keys = Vec::new();
+            Focusable::<HostFixture>::a11y_elems(s, GroupId(0), cx, &mut keys);
+            keys.iter()
+                .map(|key| {
+                    let a = Focusable::<HostFixture>::a11y(s, key, cx).expect("a bound row projects");
+                    (a.path.to_string(), a.subject.map(|c| c.into_owned()))
+                })
+                .collect()
+        })
+    }
+
+    /// **A row names the title it acts on.** Play, Mark watched, Remove from Deck and the Watchlist rows
+    /// all act on the item the menu was opened on, so a harness press (`press:itemmenu.<row>@<rk>`) has
+    /// something to compare: every row carries the menu's own ratingKey as its subject, on every kind of
+    /// menu and on the Play Version page too, and a Catalog menu (no ratingKey: its title is a Watchlist
+    /// guid no server holds) carries none rather than a made-up one.
+    #[test]
+    fn every_row_names_the_menus_item_as_its_subject() {
+        let mut card = leaf_menu_with_versions();
+        let rows = row_subjects(&card);
+        assert!(rows.len() >= 3, "the menu has rows: {rows:?}");
+        for (id, subject) in &rows {
+            assert_eq!(subject.as_deref(), Some("42"), "{id}");
+        }
+        open_play_version_page(&mut card);
+        let versions = row_subjects(&card);
+        assert!(versions.iter().any(|(id, _)| id == "version.0"), "{versions:?}");
+        for (id, subject) in &versions {
+            assert_eq!(subject.as_deref(), Some("42"), "{id}");
+        }
+
+        let arg = |rk: &str, kind: ItemMenuKind| ItemMenuArg {
+            sid: plx_plex::plex::ServerId::from_raw(3),
+            rk: rk.into(),
+            kind,
+            host: EntryId(1),
+            focus: None,
+            anchor: [0; 4],
+            loaded_episode: false,
+            from_home: false,
+            catalog: None,
+            watchlist: None,
+        };
+        let mut strip = ItemMenuScreen::new(
+            EntryId(8),
+            arg("77", ItemMenuKind::Episode { mark: PosterMark::None, versions: Vec::new() }),
+        );
+        let mut tab = ItemMenuScreen::new(
+            EntryId(8),
+            arg("season-9", ItemMenuKind::Season { mark: PosterMark::None, show_rk: "show-1".into(), index: 4 }),
+        );
+        for (menu, want) in [(&mut strip, "77"), (&mut tab, "season-9")] {
+            menu.build_rows(test_store().view(), DeckPress::Play);
+            let rows = row_subjects(menu);
+            assert!(!rows.is_empty());
+            for (id, subject) in &rows {
+                assert_eq!(subject.as_deref(), Some(want), "{id}");
+            }
+        }
+
+        let mut catalog = ItemMenuScreen::new(
+            EntryId(8),
+            arg("", ItemMenuKind::Catalog { state: plx_data::watchlist::model::TileState::NotOnAnyServer }),
+        );
+        catalog.build_rows(test_store().view(), DeckPress::Play);
+        let rows = row_subjects(&catalog);
+        assert!(!rows.is_empty());
+        for (id, subject) in &rows {
+            assert_eq!(*subject, None, "{id}: a Catalog menu has no ratingKey to name");
+        }
     }
 }
