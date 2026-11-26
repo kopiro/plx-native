@@ -1559,35 +1559,36 @@ impl TableView {
         self.list_focused && !(self.n_rows() > 0 && self.rows_at(self.sel).moving.is_lifted())
     }
 
-    /// How much of the pill is the GHOST right now, 0..1: the share of the pill's travel that sits on
-    /// [`Row::disabled`] rows, by the very coverage rule the ink follows ([`Self::pill_cover`]), so
-    /// the fill and the ink can never disagree about which row the pill is on. The sum is clamped:
-    /// between two disabled rows the pill is ghost throughout (their two coverages add to one).
-    /// 0 for a table with no disabled row, which then pays no walk.
+    /// The share of the pill that sits on disabled rows, for the draw census and tests.
     fn ghost_cover(&self) -> f32 {
-        self.row_cover(|row| row.disabled)
+        self.styled_pill_cover().0
     }
 
-    fn row_cover(&self, matches: impl Fn(&Row) -> bool) -> f32 {
-        if !self.shared_pill() || !self.sections.iter().any(|s| s.rows.iter().any(&matches)) {
-            return 0.0;
+    /// Disabled and danger fill follow the same coverage rule as the ink. Walk once for both;
+    /// ordinary tables with no styled rows pay no walk. A disabled danger row counts only as ghost.
+    fn styled_pill_cover(&self) -> (f32, f32) {
+        if !self.shared_pill() || !self.sections.iter().any(|s| s.rows.iter().any(|r| r.disabled || r.danger)) {
+            return (0.0, 0.0);
         }
-        let mut sum = 0.0f32;
+        let mut ghost = 0.0f32;
+        let mut danger = 0.0f32;
         self.walk(|cy, gi, _| {
             if gi >= 0 {
                 let row = self.rows_at(gi);
-                if matches(row) {
-                    sum += self.pill_cover(cy, row.height_in(self.tall_row_h()));
+                if row.disabled {
+                    ghost += self.pill_cover(cy, row.height_in(self.tall_row_h()));
+                } else if row.danger {
+                    danger += self.pill_cover(cy, row.height_in(self.tall_row_h()));
                 }
             }
         });
-        sum.clamp(0.0, 1.0)
+        (ghost.clamp(0.0, 1.0), danger.clamp(0.0, 1.0))
     }
 
     fn focus_fill(&self) -> [f32; 4] {
-        let danger = self.row_cover(|row| row.danger && !row.disabled);
+        let (ghost, danger) = self.styled_pill_cover();
         let fill = Self::covered_color(crate::ACCENT, theme::DANGER, danger);
-        Self::covered_color(fill, theme::OVERLAY_FOCUS_PILL, self.ghost_cover())
+        Self::covered_color(fill, theme::OVERLAY_FOCUS_PILL, ghost)
     }
 
     fn covered_color(rest: [f32; 4], focused: [f32; 4], cover: f32) -> [f32; 4] {

@@ -23,13 +23,17 @@ impl MediaDeleteRunner {
         };
         let (send, recv) = mpsc::channel();
         let target = req.clone();
-        if !plx_base::task::spawn_small("media-delete", move || {
+        // Reuse the app's boxed spawn path instead of instantiating another thread launcher.
+        let work: Box<dyn FnOnce() + Send> = Box::new(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 client.delete_metadata(&target.rk, target.key)
             })).unwrap_or(DeleteResult::Unavailable);
             let _ = send.send(result);
             plx_machine::present::wake_from_worker();
-        }) { return Some(DeleteResult::Unavailable); }
+        });
+        if !plx_base::task::spawn_small("media-delete", work) {
+            return Some(DeleteResult::Unavailable);
+        }
         self.pending = Some((from, req, recv));
         None
     }

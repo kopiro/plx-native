@@ -2090,6 +2090,7 @@ impl Bridge<'_> {
         self.stores.person_run(pending.command, &input)
     }
 
+    #[inline(never)]
     fn person_run_from(&mut self, sender: Option<MachineId>, cmd: plx_data::stores::person::PersonCmd) -> bool {
         use plx_data::stores::person::PersonCmd;
         match cmd {
@@ -2190,6 +2191,7 @@ impl Bridge<'_> {
 
     /// Run one Collection command with the registry's answer as of now. A command emits no job
     /// (the page's request is the pump's), so there is nothing to drain.
+    #[inline(never)]
     pub(crate) fn collection_run(&mut self, cmd: plx_data::stores::collection::CollectionCmd) -> bool {
         super::adapters::stores::refill_client_keys(&mut self.retained.client_keys);
         self.stores.collection_run(cmd, &self.retained.client_keys)
@@ -2726,6 +2728,7 @@ fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
     /// A command emits no fetch (the requests are the pump's), but a recents edit
     /// (`RememberRecent` / `ClearRecents`) emits its `StoreJob::SaveRecents` here, and this drain is
     /// what starts it.
+    #[inline(never)]
     pub(crate) fn search_run(&mut self, cmd: plx_data::stores::search::SearchCmd) -> bool {
         self.capture_store_session();
         super::adapters::stores::refill_client_keys(&mut self.retained.client_keys);
@@ -3634,6 +3637,7 @@ impl Bridge<'_> {
         Some(result)
     }
 
+    #[cold]
     fn execute_media_delete(&mut self, from: MachineId, request: plx_screens::registry::MediaDeleteRequest,
         out: &mut Effects<'_, AppHost>) {
         let result = self.retained.media_delete.start(from, request);
@@ -3642,6 +3646,7 @@ impl Bridge<'_> {
 
     /// A confirmed delete changes list membership. View-state read-back cannot remove missing
     /// rows, so supersede retained list reads and reuse their ordinary server-backed open paths.
+    #[cold]
     fn refresh_deleted_media_lists(&mut self, sid: plx_plex::plex::ServerId) {
         use plx_data::stores::{search::SearchCmd, person::PersonCmd, collection::CollectionCmd};
         let query = self.capture_search_publication().view().query().to_owned();
