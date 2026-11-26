@@ -328,6 +328,11 @@ opt-level = 2
 lto = "fat"
 codegen-units = 1
 
+# Keep the fork's Plex request and response code compact in packaged builds. The
+# playback and rendering crates retain the release profile's speed optimization.
+[profile.release.package.plx_plex]
+opt-level = "s"
+
 # The LOCAL ARM development profile: what a plain `make` / `make deploy` builds, so the edit-rebuild
 # loop does not pay for the size work above. Same `opt-level`, same `panic` (unwind), same debug info
 # (none) and no symbol stripping, so it is the same program with the same codegen flags from
