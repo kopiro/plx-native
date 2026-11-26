@@ -267,6 +267,10 @@ pub use crate::item_menu::has_actions as item_has_menu;
 pub use crate::item_menu::Action as ItemMenuAction;
 /// Re-exported so a screen's test host names its init through the registry.
 pub use crate::family::NoInit;
+/// **The Library header's names row as a picture** (the `sibling` gate admits only `crate::registry`):
+/// Settings > Library order draws it through the one assembly the real Library header runs, with the
+/// same controls, visit slot and name fit, so the preview folds where the header does.
+pub(crate) use crate::library::{names_preview, visit_slot};
 /// The panels a sibling screen's host test reads through the shared vocabulary (the `sibling` gate
 /// admits only `crate::registry`): the Detail page's tests drive the real About panel and compare
 /// the audio summary against the tracks panel's full list.
@@ -1897,13 +1901,14 @@ pub mod word {
     pub const PICKER: &str = "picker";
     /// The Player HUD page (`screens::hud_settings`), a page of the Settings family's inner stack.
     pub const PLAYER_HUD: &str = "player-hud";
-    /// The Language page, the Diagnostics page and the Under posters pages (`screens::settings`,
-    /// `settings_diagnostics`, `settings_under_posters`): pages of the Settings family's inner stack, each its own
+    /// The Language page, the Diagnostics page, the Library order page and the Under posters pages (`screens::settings`,
+    /// `settings_diagnostics`, `settings_library_order`, `settings_under_posters`): pages of the Settings family's inner stack, each its own
     /// `overlay=` word. The two details pickers answer one word PER KIND (`DetailsPage::name`) so a scene
     /// that boots the Show picker cannot be satisfied by the Movie one. Several are hyphenated, which is why
     /// `tests/run.py` captures an overlay word as `[\w-]+`.
     pub const LANGUAGE: &str = "language";
     pub const DIAGNOSTICS: &str = "diagnostics";
+    pub const LIBRARY_ORDER: &str = "library-order";
     pub const UNDER_POSTERS: &str = "under-posters";
     pub const UNDER_POSTERS_MOVIE: &str = "under-posters-movie";
     pub const UNDER_POSTERS_SHOW: &str = "under-posters-show";
@@ -3197,8 +3202,11 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // The hero row (#1553) adds the Audio & Subtitles panel (`PreplayPanel`) and the item menu's hero
 // overflow (`HeroOverflow{rows:len}`). The pin moved from 0x8e79_1d31_a441_fb57 to 0xde99_c01f_cb88_02a4 with the `ctl` field, then to the value below once
 // this branch merged main (previous main pin: 0x16f9_ab79_9300_dc0a).
-// The fork adds the Delete dialogue state and extends the Detail menu argument.
-const SCREEN_SHAPES_PIN: u64 = 0xed815a6f8784f5b5;
+// Library order adds `SettingsPage::LibraryOrder` (ScreenId 122) to the Settings family's arg shape, and
+// `TableView::MOTION_SHAPE` gains the lift and glide springs (`library::menu::SHAPE[1]` and
+// `alt_sources::SHAPE[1]` carry it). Previous pin: 0xa2bc_fa1b_e96e_0118.
+// The fork also retains the addressed Delete menu and its confirmation state.
+const SCREEN_SHAPES_PIN: u64 = 0x7b496cfe1c4adb75;
 
 #[cfg(test)]
 mod arg_tests {
@@ -3602,6 +3610,7 @@ mod a11y_coverage_tests {
             AppArg::Settings(page) => match page {
                 SettingsPage::Root => Covered("Settings::Root", || surface(SettingsPage::Root)),
                 SettingsPage::Language => Covered("Settings::Language", || surface(SettingsPage::Language)),
+                SettingsPage::LibraryOrder => Covered("Settings::LibraryOrder", || surface(SettingsPage::LibraryOrder)),
                 SettingsPage::UnderPosters => Covered("Settings::UnderPosters", || surface(SettingsPage::UnderPosters)),
                 SettingsPage::UnderPostersDetails(_) => Covered("Settings::UnderPostersDetails", || {
                     let mut namespaces = surface(SettingsPage::UnderPostersDetails(PosterKind::Movie));
@@ -3631,10 +3640,10 @@ mod a11y_coverage_tests {
         }
     }
 
-    /// How many leaf arms the table has: 23 flat `AppArg` arms, 5 `ContentArg`, 22 `SettingsPage` and
+    /// How many leaf arms the table has: 23 flat `AppArg` arms, 5 `ContentArg`, 23 `SettingsPage` and
     /// `FirstRunConsent`. A new arm fails [`coverage`] to compile, and then this to pass until the census
     /// below holds it too.
-    const ARMS: usize = 51;
+    const ARMS: usize = 52;
 
     /// **A value of every leaf arm** the table names: the registry's own page and surface censuses, plus
     /// the arms those leave out (Filmography and every Settings page).
@@ -3650,6 +3659,7 @@ mod a11y_coverage_tests {
             [
                 SettingsPage::Root,
                 SettingsPage::Language,
+                SettingsPage::LibraryOrder,
                 SettingsPage::UnderPosters,
                 SettingsPage::UnderPostersDetails(PosterKind::Movie),
                 SettingsPage::Contribute,
