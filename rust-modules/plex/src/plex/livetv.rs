@@ -30,16 +30,163 @@ pub struct LiveChannel {
     /// The provider's logo URL. It is served by the TUNER's host, which the TV may not reach, so
     /// it is fetched through the server's photo transcoder like any other image.
     pub thumb: String,
-    /// What is on now: the show of an episode, the title of anything else. Empty when the guide
-    /// has no airing for this channel at this second.
-    pub now: String,
-    /// Airing artwork, falling back to the channel logo.
-    pub now_thumb: String,
-    /// The current programme's guide description and start time.
-    pub now_summary: String,
+    /// Every programme the last guide read kept for this channel, the one on now among them ([`Airings`]).
+    pub airings: Airings,
+}
+
+/// One programme of a channel's guide row: what the Guide's cell and Browse's card say.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveAiring {
+    /// What a tile says is on ([`airing_label`]).
+    pub title: String,
     pub begins_at: i64,
-    /// Unix seconds the current airing ends; 0 when nothing is airing. The row is stale after it.
+    /// Unix seconds the programme ends; 0 when the guide gives no end.
     pub ends_at: i64,
+    /// The programme's art: its own still, else its show's, else the channel's logo, so a card of any
+    /// programme has a poster to draw.
+    pub thumb: String,
+    /// The programme's guide description.
+    pub summary: String,
+}
+
+impl LiveAiring {
+    /// A programme with no art and no description: the words and the times alone.
+    pub fn new(title: impl Into<String>, begins_at: i64, ends_at: i64) -> Self {
+        Self { title: title.into(), begins_at, ends_at, thumb: String::new(), summary: String::new() }
+    }
+}
+
+/// **A channel's guide row: every programme the last read kept, in start order, and which of them is on now.**
+///
+/// A grid read answers every airing that has not ended before the Guide's earliest window start
+/// ([`window_start`]) and that begins by the end the read asked for ([`guide_path`]). This holds them all: the ones
+/// that have aired (a Guide cell over the part of the window they cover), the one on now and the ones to come. What
+/// is ON NOW is not a second copy of one of them but a position in this list, fixed when the list is built at the
+/// read's `now` ([`Airings::of`]) and readable only through [`on_air`](Self::on_air), so what a reader says is on
+/// can never disagree with the list. It is the read's answer, not the wall clock's: a row is stale from the end of
+/// the airing on until the next read, which the store schedules for that instant.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Airings {
+    list: Vec<LiveAiring>,
+    on: Option<usize>,
+}
+
+impl Airings {
+    /// The row of `list` as the guide stands at `now`: start order (a tie keeps the guide's order), the airing on
+    /// being the latest-starting one that has begun and not ended (a guide with no end counts as on while it has
+    /// begun). One with no words to say is never on, so a channel with nothing to show reads as none.
+    ///
+    /// **What is kept** is what the Guide can draw: the one on, the ones that have not begun and the ones that have
+    /// aired and ended after the earliest window start ([`window_start`] of `now`), so the row stays bounded however
+    /// long the guide is. The row is one time-ordered line of programmes, so a programme that has begun and lies over
+    /// the one on (the guide overlapped two) is not kept, whether it is still running or has ended since: one that
+    /// ended after the one on began would lie over it.
+    pub fn of(mut list: Vec<LiveAiring>, now: i64) -> Self {
+        list.sort_by_key(|a| a.begins_at);
+        let live = |a: &LiveAiring| a.begins_at <= now && (a.ends_at == 0 || a.ends_at > now);
+        let on_at = list.iter().rposition(|a| live(a) && !a.title.is_empty());
+        let floor = window_start(now);
+        let on_begins = on_at.map(|i| list[i].begins_at);
+        let (mut kept, mut on) = (Vec::with_capacity(list.len()), None);
+        for (i, airing) in list.into_iter().enumerate() {
+            let aired_clear = airing.ends_at > floor && on_begins.is_none_or(|begins| airing.ends_at <= begins);
+            let keep = if live(&airing) { Some(i) == on_at } else { airing.begins_at > now || aired_clear };
+            if keep {
+                if Some(i) == on_at { on = Some(kept.len()); }
+                kept.push(airing);
+            }
+        }
+        Self { list: kept, on }
+    }
+
+    /// Every programme held, in start order.
+    pub fn all(&self) -> &[LiveAiring] {
+        &self.list
+    }
+
+    /// The programme on now, if there is one.
+    pub fn on_air(&self) -> Option<&LiveAiring> {
+        self.on.and_then(|i| self.list.get(i))
+    }
+
+    /// Where the programme on now stands in [`all`](Self::all).
+    pub fn on_air_at(&self) -> Option<usize> {
+        self.on.filter(|i| *i < self.list.len())
+    }
+
+    /// What is on now, in words; empty when nothing is.
+    pub fn now_title(&self) -> &str {
+        self.on_air().map_or("", |a| a.title.as_str())
+    }
+
+    /// The art of what is on now; empty when nothing is.
+    pub fn now_thumb(&self) -> &str {
+        self.on_air().map_or("", |a| a.thumb.as_str())
+    }
+
+    /// When what is on now began, in Unix seconds; 0 when nothing is.
+    pub fn begins_at(&self) -> i64 {
+        self.on_air().map_or(0, |a| a.begins_at)
+    }
+
+    /// When what is on now ends; 0 when nothing is (or the guide gives no end).
+    pub fn ends_at(&self) -> i64 {
+        self.on_air().map_or(0, |a| a.ends_at)
+    }
+
+    /// Hold `more` after the programmes held, as the store keeps a far read's programmes across a scheduled read
+    /// of the live window. Each must begin no earlier than the last held, which keeps the order and so the
+    /// position of what is on now.
+    pub fn extend_later(&mut self, more: impl IntoIterator<Item = LiveAiring>) {
+        let last = self.list.last().map_or(i64::MIN, |a| a.begins_at);
+        let before = self.list.len();
+        self.list.extend(more);
+        debug_assert!(self.list[before..].iter().all(|a| a.begins_at >= last), "held after the ones held");
+    }
+}
+
+/// Fixtures for the screens' and the app's tests: a row stated as it is meant to read, whatever the clock says.
+#[cfg(any(test, feature = "test-support"))]
+impl Airings {
+    /// A row whose programme on now is `on` (whatever its times say), followed by `later`.
+    pub fn on_then(on: LiveAiring, later: Vec<LiveAiring>) -> Self {
+        let mut list = vec![on];
+        list.extend(later);
+        Self { list, on: Some(0) }
+    }
+
+    /// This row with the programme on now given other times (a row with none on is left as it is).
+    pub fn retimed(mut self, begins_at: i64, ends_at: i64) -> Self {
+        if let Some(on) = self.on.and_then(|i| self.list.get_mut(i)) {
+            (on.begins_at, on.ends_at) = (begins_at, ends_at);
+        }
+        self
+    }
+
+    /// This row with everything after the programme on now replaced by `later` (the whole row, for one with none on).
+    pub fn with_later(mut self, later: Vec<LiveAiring>) -> Self {
+        self.list.truncate(self.on.map_or(0, |i| i + 1));
+        self.list.extend(later);
+        self
+    }
+}
+
+/// The length of the Guide's window in seconds: 90 minutes. It is the width of the board, not a limit on what
+/// the Guide reaches: the window moves in [`WINDOW_STEP_SECONDS`] steps as far as the guide has data.
+pub const WINDOW_SECONDS: i64 = 90 * 60;
+/// The half hour the window's start snaps to, the step it moves by and the ruler's label step.
+pub const WINDOW_STEP_SECONDS: i64 = 30 * 60;
+
+/// **Where the Guide's window starts** for `now`: the last half hour at or before it (Unix seconds, so a
+/// zone on a quarter hour sees ticks on its own :15 and :45). It moves in half-hour steps, never with the
+/// minute: the cells' places and the ruler's labels stay put while the now line crosses them.
+pub fn window_start(now: i64) -> i64 {
+    now - now.rem_euclid(WINDOW_STEP_SECONDS)
+}
+
+/// Where the live Guide window (the first one, [`window_start`]) ends for `now`: [`WINDOW_SECONDS`] after it.
+pub fn window_end(now: i64) -> i64 {
+    window_start(now) + WINDOW_SECONDS
 }
 
 /// `GET /media/providers`.
@@ -62,12 +209,16 @@ pub fn epg_channels_path(epg: &str) -> String {
     format!("/{epg}/lineups/dvr/channels")
 }
 
-/// `GET /{epg}/grid?beginsAt<=now&endsAt>=now` — one airing per channel: the one on at `now`.
-/// The operators are part of the KEY (`beginsAt%3C=`), which [`QueryBuilder`] passes as given.
-pub fn on_now_path(epg: &str, now: i64) -> String {
+/// `GET /{epg}/grid?beginsAt<=until&endsAt>=window_start` — every airing that has not ended before the Guide's
+/// earliest window start ([`window_start`] of `now`, up to half an hour back) and starts by `until` (at least
+/// [`window_end`]: the Guide scrolled ahead asks for the far end of the window it shows): per channel the ones that
+/// have aired inside the window, the one on at `now` and the ones that follow up to `until` (the two bounds measured
+/// 2026-11-26, `docs/pms-api.md` §10). The operators are part of the KEY (`beginsAt%3C=`), which [`QueryBuilder`]
+/// passes as given.
+pub fn guide_path(epg: &str, now: i64, until: i64) -> String {
     QueryBuilder::new(format!("/{epg}/grid"))
-        .int("beginsAt%3C", now)
-        .int("endsAt%3E", now)
+        .int("beginsAt%3C", until.max(window_end(now)))
+        .int("endsAt%3E", window_start(now))
         .build()
 }
 
@@ -313,15 +464,20 @@ fn airing_label(m: &Metadata) -> &str {
     }
 }
 
+/// A programme's own art: its still, else its show's, else its background; `None` when the guide gives none.
+fn programme_art(m: &Metadata) -> Option<&String> {
+    [&m.thumb, &m.grandparent_thumb, &m.art].into_iter().find(|art| !art.is_empty())
+}
+
 /// Join a DVR's complete, tunable lineup with its airings in channel-number order.
-pub fn lineup(dvr: &Dvr, channels: &[EpgChannel], on_now: &[Metadata]) -> Vec<LiveChannel> {
+pub fn lineup(dvr: &Dvr, channels: &[EpgChannel], airings: &[Metadata], now: i64) -> Vec<LiveChannel> {
     if !is_path_id(&dvr.key) || !is_provider_id(&dvr.epg_identifier) { return Vec::new(); }
     let mut rows: Vec<LiveChannel> = channels.iter()
         .filter(|ch| is_path_id(&ch.grid_key))
         .map(|ch| LiveChannel { dvr: dvr.key.clone(), channel: ch.grid_key.clone(),
             vcn: ch.vcn.clone(), name: channel_name(ch), thumb: ch.thumb.clone(),
-            now: String::new(), now_thumb: ch.thumb.clone(), now_summary: String::new(), begins_at: 0, ends_at: 0 }).collect();
-    update_on_now(&mut rows, on_now);
+            airings: Airings::default() }).collect();
+    update_airings(&mut rows, airings, now);
     rows.sort_by(|a, b| vcn_order(&a.vcn, &b.vcn));
     rows
 }
@@ -340,19 +496,18 @@ pub fn vcn_order(a: &str, b: &str) -> std::cmp::Ordering {
     order.then_with(|| a.cmp(b))
 }
 
-/// Refresh only the airings of an existing lineup; no channel is added or lost by a grid read.
-pub fn update_on_now(rows: &mut [LiveChannel], on_now: &[Metadata]) {
+/// Refresh only the airings of an existing lineup; no channel is added or lost by a grid read. A grid read
+/// answers every airing that has not ended before the Guide's earliest window start ([`guide_path`]), up to the end it
+/// asked for: per channel they become its [`Airings`] at `now`, the aired ones, the one on and the later ones in one
+/// start-ordered list.
+pub fn update_airings(rows: &mut [LiveChannel], airings: &[Metadata], now: i64) {
     for ch in rows {
-        let airing = on_now.iter().find_map(|m| m.media.iter().find(|media| {
+        let mine = airings.iter().filter_map(|m| m.media.iter().find(|media| {
             if media.channel_identifier.is_empty() { media.channel_vcn == ch.vcn }
             else { media.channel_identifier == ch.channel }
-        }).map(|media| (m, media)));
-        ch.now = airing.map_or_else(String::new, |(m, _)| airing_label(m).to_owned());
-        ch.now_summary = airing.map_or_else(String::new, |(m, _)| m.summary.clone());
-        ch.begins_at = airing.map_or(0, |(_, media)| media.begins_at);
-        ch.ends_at = airing.map_or(0, |(_, media)| media.ends_at);
-        ch.now_thumb = airing.and_then(|(m, _)| [&m.thumb, &m.grandparent_thumb, &m.art]
-            .into_iter().find(|art| !art.is_empty())).unwrap_or(&ch.thumb).clone();
+        }).map(|media| LiveAiring { title: airing_label(m).to_owned(), begins_at: media.begins_at, ends_at: media.ends_at,
+            thumb: programme_art(m).unwrap_or(&ch.thumb).clone(), summary: m.summary.clone() }));
+        ch.airings = Airings::of(mine.collect(), now);
     }
 }
 
@@ -385,12 +540,14 @@ impl Client {
         }
     }
 
-    /// `GET /{epg}/grid` bounded to the airings on at `now` (Unix seconds).
-    pub fn epg_on_now(&self, epg: &str, now: i64) -> Option<Vec<Metadata>> {
+    /// `GET /{epg}/grid` bounded to the airings that have not ended before the Guide's earliest window start
+    /// ([`window_start`] of `now`, Unix seconds) and that begin by `until` ([`guide_path`]): per channel the ones that
+    /// have aired inside the window, the one on now and the ones that follow up to `until`.
+    pub fn epg_guide(&self, epg: &str, now: i64, until: i64) -> Option<Vec<Metadata>> {
         if !is_provider_id(epg) {
             return None;
         }
-        self.get_json(&on_now_path(epg, now)).map(|c| c.metadata)
+        self.get_json(&guide_path(epg, now, until)).map(|c| c.metadata)
     }
 
     /// `POST …/tune` — the server starts recording the channel and answers once it streams (4.8 s
@@ -544,10 +701,10 @@ mod tests {
     #[test]
     fn lineup_joins_airings_in_channel_order_and_drops_the_number_from_names() {
         let dvr = page(DVRS).dvr.remove(0);
-        let rows = lineup(&dvr, &page(CHANNELS).channel, &page(ON_NOW).metadata);
+        let rows = lineup(&dvr, &page(CHANNELS).channel, &page(ON_NOW).metadata, 1_792_523_200);
         let shown: Vec<_> = rows
             .iter()
-            .map(|r| (r.vcn.as_str(), r.name.as_str(), r.now.as_str(), r.ends_at))
+            .map(|r| (r.vcn.as_str(), r.name.as_str(), r.airings.now_title(), r.airings.ends_at()))
             .collect();
         assert_eq!(
             shown,
@@ -560,9 +717,9 @@ mod tests {
         assert!(rows.iter().all(|r| r.dvr == "7"));
         assert_eq!(rows[0].channel, "C101.242.ersatztv.org", "the tune names the guide's id");
         assert_eq!(rows[0].thumb, "http://192.0.2.10:8409/iptv/logos/gen?text=Family");
-        assert_eq!(rows[0].begins_at, 1_792_523_168);
-        assert_eq!(rows[0].now_summary, "A synthetic guide description.");
-        assert_eq!((rows[1].begins_at, rows[1].now_summary.as_str()), (0, ""));
+        assert_eq!(rows[0].airings.begins_at(), 1_792_523_168);
+        assert_eq!(rows[0].airings.on_air().map(|a| a.summary.as_str()), Some("A synthetic guide description."));
+        assert_eq!((rows[1].airings.begins_at(), rows[1].airings.on_air().is_none()), (0, true));
     }
 
     #[test]
@@ -591,15 +748,15 @@ mod tests {
         airings[0].art = "/art".into();
         let cases = ["/episode", "/show", "/art", channels[1].thumb.as_str()];
         for (i, expected) in cases.iter().enumerate() {
-            let rows = lineup(&dvr, &channels, &airings);
-            assert_eq!(&rows[0].now_thumb, expected);
+            let rows = lineup(&dvr, &channels, &airings, 1_792_523_200);
+            assert_eq!(rows[0].airings.now_thumb(), *expected);
             match i { 0 => airings[0].thumb.clear(), 1 => airings[0].grandparent_thumb.clear(),
                 2 => airings[0].art.clear(), _ => {} }
         }
         let mut invalid = channels[0].clone(); invalid.grid_key = "../bad".into();
-        assert!(lineup(&dvr, &[invalid], &[]).is_empty());
+        assert!(lineup(&dvr, &[invalid], &[], 0).is_empty());
         let mut invalid = dvr.clone(); invalid.key = "7/8".into();
-        assert!(lineup(&invalid, &channels, &airings).is_empty());
+        assert!(lineup(&invalid, &channels, &airings, 1_792_523_200).is_empty());
         assert_eq!(usable_dvrs(&[invalid]).count(), 0);
     }
 
@@ -612,12 +769,12 @@ mod tests {
         let mut airing = page(ON_NOW).metadata.remove(0);
         airing.media[0].channel_vcn = "10".into();
         airing.media[0].channel_identifier = "C2".into();
-        let rows = lineup(&dvr, &channels, &[airing]);
+        let rows = lineup(&dvr, &channels, &[airing], 1_792_523_200);
         assert_eq!(rows.iter().map(|c| c.vcn.as_str()).collect::<Vec<_>>(), ["2", "10", "ABC", "XYZ"]);
-        assert_eq!(rows[0].now, "Family Show");
-        assert_eq!(rows[1].now, "");
+        assert_eq!(rows[0].airings.now_title(), "Family Show");
+        assert_eq!(rows[1].airings.now_title(), "");
         channels[0].vcn.clear();
-        assert_eq!(lineup(&dvr, &channels, &[]).len(), 4, "a missing number does not make a valid tune address unusable");
+        assert_eq!(lineup(&dvr, &channels, &[], 0).len(), 4, "a missing number does not make a valid tune address unusable");
     }
 
     #[test]
@@ -633,7 +790,7 @@ mod tests {
         let channels: Vec<_> = ["10.1", "2.1", "2"].iter().map(|vcn| EpgChannel {
             grid_key: format!("C{vcn}"), vcn: (*vcn).into(), title: format!("{vcn} Channel"), ..Default::default()
         }).collect();
-        let rows = lineup(&dvr, &channels, &[]);
+        let rows = lineup(&dvr, &channels, &[], 0);
         assert_eq!(rows.iter().map(|c| c.vcn.as_str()).collect::<Vec<_>>(), ["2", "2.1", "10.1"]);
     }
 
@@ -813,9 +970,161 @@ mod tests {
             epg_channels_path("tv.plex.providers.epg.xmltv:7"),
             "/tv.plex.providers.epg.xmltv:7/lineups/dvr/channels"
         );
+        // 1_792_524_066 falls in the half hour that starts at 1_792_522_800; the window ends 90 minutes after it
         assert_eq!(
-            on_now_path("tv.plex.providers.epg.xmltv:7", 1_792_524_066),
-            "/tv.plex.providers.epg.xmltv:7/grid?beginsAt%3C=1792524066&endsAt%3E=1792524066"
+            guide_path("tv.plex.providers.epg.xmltv:7", 1_792_524_066, 0),
+            "/tv.plex.providers.epg.xmltv:7/grid?beginsAt%3C=1792528200&endsAt%3E=1792522800"
         );
+        // scrolled ahead: the far end of the window shown, an hour on
+        assert_eq!(
+            guide_path("tv.plex.providers.epg.xmltv:7", 1_792_524_066, 1_792_528_200 + 3_600),
+            "/tv.plex.providers.epg.xmltv:7/grid?beginsAt%3C=1792531800&endsAt%3E=1792522800"
+        );
+    }
+
+    #[test]
+    fn the_guide_window_starts_on_the_half_hour_at_or_before_now_and_runs_ninety_minutes() {
+        assert_eq!((window_start(1_792_522_800), window_end(1_792_522_800)), (1_792_522_800, 1_792_528_200), "on the tick");
+        assert_eq!(window_start(1_792_524_599), 1_792_522_800, "the last second of the half hour");
+        assert_eq!(window_start(1_792_524_600), 1_792_524_600, "the next tick starts the next window");
+        assert_eq!(window_end(1_792_524_066) - window_start(1_792_524_066), WINDOW_SECONDS);
+        assert_eq!(window_start(-1), -1_800, "before the epoch rounds down, not toward zero");
+    }
+
+    fn airing(vcn: &str, title: &str, begins: i64, ends: i64) -> Metadata {
+        let mut m = page(ON_NOW).metadata.remove(0);
+        m.title = title.into();
+        m.kind = "movie".into();
+        m.media[0].channel_vcn = vcn.into();
+        m.media[0].channel_identifier = format!("C{vcn}.{}.ersatztv.org", vcn.parse::<u32>().unwrap() + 141);
+        m.media[0].begins_at = begins;
+        m.media[0].ends_at = ends;
+        m
+    }
+
+    /// A window read answers the airings in no promised order, and only the one on now must be what What's on, the
+    /// zap and the banner read: `now`, never "the first airing the channel has". All of them are one start-ordered list.
+    #[test]
+    fn a_window_read_is_one_start_ordered_list_with_the_airing_on_now_marked_in_it() {
+        let dvr = page(DVRS).dvr.remove(0);
+        let channels = page(CHANNELS).channel;
+        let now = 1_792_523_200;
+        let airings = [
+            airing("101", "Second", now + 1_000, now + 2_800),
+            airing("101", "Third", now + 2_800, now + 4_000),
+            airing("101", "First", now - 800, now + 1_000),
+            airing("102", "Only", now - 100, now + 500),
+        ];
+        let rows = lineup(&dvr, &channels, &airings, now);
+        let family = rows.iter().find(|r| r.vcn == "101").unwrap();
+        fn held(row: &LiveChannel) -> Vec<(&str, i64, i64)> {
+            row.airings.all().iter().map(|a| (a.title.as_str(), a.begins_at, a.ends_at)).collect()
+        }
+        assert_eq!((family.airings.now_title(), family.airings.begins_at(), family.airings.ends_at()), ("First", now - 800, now + 1_000));
+        assert_eq!(held(family), [("First", now - 800, now + 1_000), ("Second", now + 1_000, now + 2_800), ("Third", now + 2_800, now + 4_000)],
+            "earliest first, the one on among them");
+        assert_eq!(family.airings.on_air_at(), Some(0));
+        let cartoons = rows.iter().find(|r| r.vcn == "102").unwrap();
+        assert_eq!(cartoons.airings.now_title(), "Only");
+        assert_eq!(cartoons.airings.all().len(), 1, "a channel whose guide is current airings only has no next");
+        let anime = rows.iter().find(|r| r.vcn == "103").unwrap();
+        assert!(anime.airings.on_air().is_none() && anime.airings.all().is_empty(), "a channel with no guide data has none");
+    }
+
+    /// A programme's art is its own still, else its show's, else the channel's logo, whichever of the row it is.
+    #[test]
+    fn a_programme_carries_its_own_art_else_its_shows_else_the_channels_logo() {
+        let dvr = page(DVRS).dvr.remove(0);
+        let channels = page(CHANNELS).channel;
+        let now = 1_792_523_200;
+        let mut own = airing("101", "Own", now + 100, now + 900);
+        own.thumb = "/own".into();
+        let mut show = airing("101", "Show", now + 900, now + 1_800);
+        (show.thumb, show.grandparent_thumb) = (String::new(), "/show".into());
+        let mut bare = airing("101", "Bare", now + 1_800, now + 2_400);
+        (bare.thumb, bare.grandparent_thumb, bare.art) = (String::new(), String::new(), String::new());
+        let mut aired = airing("101", "Aired", now - 900, now - 100);
+        (aired.thumb, aired.grandparent_thumb, aired.art) = (String::new(), String::new(), String::new());
+        let rows = lineup(&dvr, &channels, &[own, show, bare, aired], now);
+        let family = rows.iter().find(|r| r.vcn == "101").unwrap();
+        assert_eq!(family.airings.all().iter().map(|a| a.thumb.as_str()).collect::<Vec<_>>(),
+            [family.thumb.as_str(), "/own", "/show", family.thumb.as_str()]);
+    }
+
+    #[test]
+    fn an_airing_that_has_not_begun_is_never_on_now_and_one_that_has_ended_is_neither() {
+        let dvr = page(DVRS).dvr.remove(0);
+        let channels = page(CHANNELS).channel;
+        let now = 1_792_523_200;
+        let rows = lineup(&dvr, &channels, &[airing("101", "Soon", now + 60, now + 600), airing("101", "Over", now - 600, now)], now);
+        let family = rows.iter().find(|r| r.vcn == "101").unwrap();
+        assert_eq!((family.airings.now_title(), family.airings.begins_at(), family.airings.ends_at()), ("", 0, 0), "a gap in the guide is no programme on now");
+        assert_eq!(family.airings.all().iter().map(|a| a.title.as_str()).collect::<Vec<_>>(), ["Over", "Soon"]);
+        assert_eq!(family.airings.on_air_at(), None);
+    }
+
+    /// The Guide's window starts up to half an hour before now, so a programme that has already ENDED but still
+    /// overlaps it is a cell (fully aired) and the row keeps it, while what is on now stays what it was.
+    #[test]
+    fn an_aired_airing_that_overlaps_the_window_is_kept_and_what_is_on_now_is_unchanged() {
+        let dvr = page(DVRS).dvr.remove(0);
+        let channels = page(CHANNELS).channel;
+        let start = window_start(1_792_523_200);
+        let now = start + 17 * 60;
+        let rows = lineup(&dvr, &channels, &[
+            airing("101", "Aired", start - 3_000, start + 600),
+            airing("101", "On", start + 600, now + 1_000),
+            airing("101", "Next", now + 1_000, now + 3_000),
+        ], now);
+        let family = rows.iter().find(|r| r.vcn == "101").unwrap();
+        assert_eq!(family.airings.all().iter().map(|a| a.title.as_str()).collect::<Vec<_>>(), ["Aired", "On", "Next"]);
+        assert_eq!((family.airings.now_title(), family.airings.begins_at(), family.airings.ends_at()), ("On", start + 600, now + 1_000));
+        assert_eq!(family.airings.on_air_at(), Some(1), "the position of what is on is the list's own");
+    }
+
+    /// Memory stays bounded: what ended before the window's earliest start (or exactly on it, which leaves no cell)
+    /// is not kept, and neither is a programme the guide overlaps with the one on now.
+    #[test]
+    fn an_airing_that_ended_before_the_windows_start_is_not_kept() {
+        let dvr = page(DVRS).dvr.remove(0);
+        let channels = page(CHANNELS).channel;
+        let start = window_start(1_792_523_200);
+        let now = start + 17 * 60;
+        let rows = lineup(&dvr, &channels, &[
+            airing("101", "Long gone", start - 7_200, start - 3_600),
+            airing("101", "Ended on the tick", start - 1_800, start),
+            airing("101", "Just inside", start - 1_800, start + 1),
+            airing("101", "Overlapped", start + 100, now + 5_000),
+            airing("101", "On", start + 600, now + 1_000),
+        ], now);
+        let family = rows.iter().find(|r| r.vcn == "101").unwrap();
+        assert_eq!(family.airings.all().iter().map(|a| a.title.as_str()).collect::<Vec<_>>(), ["Just inside", "On"]);
+        assert_eq!(family.airings.now_title(), "On", "the latest-starting airing that has begun and not ended, as before");
+    }
+
+    /// The far programmes a store keeps across a scheduled read are held after the row without moving what is on.
+    #[test]
+    fn programmes_held_after_the_row_keep_the_position_of_what_is_on() {
+        let now = 1_792_523_200;
+        let mut row = Airings::of(vec![LiveAiring::new("Aired", now - 900, now - 100), LiveAiring::new("On", now - 100, now + 900)], now);
+        assert_eq!(row.on_air_at(), Some(1));
+        row.extend_later([LiveAiring::new("Far", now + 7_200, now + 9_000)]);
+        assert_eq!((row.on_air_at(), row.now_title(), row.all().len()), (Some(1), "On", 3));
+    }
+
+    /// A programme the guide overlaps with the one on is not kept whether it is still running or has aired since: the
+    /// row is one time-ordered line, so one that ended after the one on began would lie over it.
+    #[test]
+    fn an_aired_airing_that_lies_over_the_one_on_is_not_kept() {
+        let start = window_start(1_792_523_200);
+        let dvr = page(DVRS).dvr.remove(0);
+        let channels = page(CHANNELS).channel;
+        for now in [start + 420, start + 720] {
+            let guide = [airing("101", "A", start - 600, start + 600), airing("101", "B", start + 300, start + 3_600)];
+            let rows = lineup(&dvr, &channels, &guide, now);
+            let family = rows.iter().find(|r| r.vcn == "101").unwrap();
+            assert_eq!(family.airings.all().iter().map(|x| x.title.as_str()).collect::<Vec<_>>(), ["B"], "at {now}");
+            assert_eq!(family.airings.now_title(), "B");
+        }
     }
 }

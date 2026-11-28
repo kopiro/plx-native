@@ -355,7 +355,7 @@ class SubjectBearing(unittest.TestCase):
 
     SUBJECT_IDS = ["home.shelf.2.card.5", "home.continue.card.0", "watchlist.grid.card.7", "library.grid.card.3",
                    "collection.card.1", "livetv.recent.card.0", "livetv.on_now.card.4", "detail.related.card.0", "detail.episodes.still.3", "detail.episodes.text.3",
-                   "detail.season.2", "filmography.row.4", "catalog.primary", "home.hero.play", "home.hero.info",
+                   "detail.season.2", "filmography.row.4", "livetv.guide.4", "catalog.primary", "home.hero.play", "home.hero.info",
                    "home.hero.watchlist", "detail.hero.play", "detail.hero.restart", "detail.hero.trailer",
                    "detail.hero.mark_watched", "detail.hero.mark_unwatched", "detail.hero.watchlist",
                    "itemmenu.play", "itemmenu.watchlist_remove", "itemmenu.version.0", "versions.row.0", "versions.row.3",
@@ -426,6 +426,7 @@ class SubjectBearing(unittest.TestCase):
             "screens/src/detail/mod.rs": (1, "detail.season.<i>, detail.episodes.still|text.<i>, the six detail.hero.* "
                                               "controls that play or write (one closure)"),
             "screens/src/filmography.rs": (1, "filmography.row.<i>"),
+            "screens/src/livetv.rs": (1, "livetv.guide.<n>: the Guide's cells (OK tunes the channel where it is airing)"),
             "screens/src/catalog.rs": (1, "catalog.primary"),
             "screens/src/home/mod.rs": (1, "home.hero.play|info|watchlist (not the failure read-out's action)"),
             "screens/src/item_menu.rs": (1, "itemmenu.<row>, itemmenu.version.<n> (not a Catalog menu's rows)"),
@@ -456,7 +457,7 @@ class SubjectBearing(unittest.TestCase):
                      "more.fold.previous", "more.fold.next", "more.fold.from_beginning", "more.rung.*", "menu.audio.*", "menu.sub.*", "menu.off",
                      "menu.forced", "menu.hit.*"):
             self.assertIn(glob, a11y.SUBJECT_BEARING)
-        self.assertEqual(len(a11y.SUBJECT_BEARING), 34)
+        self.assertEqual(len(a11y.SUBJECT_BEARING), 35)
         self.assertNotIn("menu.*", a11y.SUBJECT_BEARING)
         self.assertNotIn("home.hero.*", a11y.SUBJECT_BEARING)
         self.assertNotIn("detail.hero.*", a11y.SUBJECT_BEARING)
@@ -478,7 +479,7 @@ class SubjectBearing(unittest.TestCase):
     ITEM_MENU_ALIAS = re.compile(r"ItemMenuAction as (\w+)")
     TITLE_ACTING = re.compile(
         r"\b(ContentReq::Play\b|HomeReq::Play\b|LibraryReq::Play\b|AppMsg::PlayVersion|"
-        r"PlayerReq::(?:Command|StandIn|RetryPlayback|PlayAutomatically|More|CommitTrack)\b|SubSearchCmd::Download\b|"
+        r"PlayerReq::(?:Command|StandIn|Recover|More|CommitTrack)\b|SubSearchCmd::Download\b|"
         r"Write::(?:Watched|Unwatched|RemoveFromDeck)\b|"
         r"ItemMenuAction::" + ITEM_MENU_ACTIONS + r"\b|"
         r"WatchlistAdd\b|WatchlistRemove\b|AppFx::Catalog\b|PlayIntent::\w+)")
@@ -514,6 +515,7 @@ class SubjectBearing(unittest.TestCase):
         "screens/src/player/overlay.rs": ("more.fold.previous", "more.fold.next", "more.fold.from_beginning",
                                           "more.rung.*", "menu.audio.*", "menu.sub.*", "menu.off", "menu.forced",
                                           "menu.hit.*"),
+        "screens/src/versions_panel.rs": ("versions.row.*",),   # on the failure screen a row asks the recovery door
         "appkit/src/track_menu.rs": ("menu.hit.*",),   # a search result's OK asks the download; the overlay names the title
     }
 

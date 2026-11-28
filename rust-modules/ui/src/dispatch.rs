@@ -748,6 +748,12 @@ fn chrome_presented<H: Host>(navigation: super::screen::NavPresentation, screen:
     presented.chrome_drawn().then_some(presented)
 }
 
+/// **Does this page wear the shared bar?** The registry's answer (`ScreenArg::chrome()`) on a screen the
+/// engine drives: the one test the chrome pass, the strip's stops and [`Dispatcher::bar_presented`] share.
+fn wears_bar<H: Host>(arg: &H::Arg, screen: &dyn Screen<H>) -> bool {
+    arg.chrome() == plx_machine::machine::Chrome::TabBar && screen.focus_source() == FocusSource::Engine
+}
+
 pub struct Split<'a, H: Host> {
     pub mounter: &'a mut dyn Mounter<H>,
     pub views: H::Views<'a>,
@@ -1139,6 +1145,16 @@ where
         self.request_with_return(from, op, self.return_state());
     }
 
+    /// The argument of a surface whose `Present` is PARKED for this frame's commit and that `which` names. A
+    /// surface mounts at the commit, once a frame, so a second request in the same frame cannot see the first in
+    /// the tree: whoever presents once-only surfaces asks here too, and folds or refuses the second request.
+    pub fn parked_present_mut(&mut self, which: impl Fn(&H::Arg) -> bool) -> Option<&mut H::Arg> {
+        self.parked.iter_mut().find_map(|(item, _)| match &mut item.fx {
+            Fx::Nav(NavOp::Present(arg)) if which(arg) => Some(arg),
+            _ => None,
+        })
+    }
+
     pub fn request_with_return(&mut self, from: MachineId, op: NavOp<H::Arg>, ret: ReturnState<H::Elem, H::Memory>) {
         // A `ret` handed in from outside was captured by an earlier `return_state()`, which stamped the
         // entry that held input then (`ret.captured`); the owner now is not a stand-in for it.
@@ -1175,6 +1191,17 @@ where
         self.page_stops.clear();
         self.page_debt = None;
         self.page_image_alpha = None;
+    }
+
+    /// **The shared bar as the top page presents it this frame, or `None` when it is not on screen**: the
+    /// top page wears the bar and [`chrome_presented`] keeps it (not fully faded by the nav or the page's
+    /// tuck). The chrome pass draws exactly when this is `Some`, so a status that lives on the bar (the
+    /// clock) asks THIS, not a list of routes. `navigation` is the rig's presentation of `self.nav`.
+    pub fn bar_presented(&self, navigation: super::screen::NavPresentation) -> Option<super::screen::NavPresentation> {
+        let top = self.nav.tabs.stack.top()?;
+        let screen = &*top.inst.as_ref()?.screen;
+        if !wears_bar::<H>(&top.arg, screen) { return None; }
+        chrome_presented::<H>(navigation, screen)
     }
 
     /// The top page's instance id, if mounted.
@@ -2391,6 +2418,23 @@ where
         // snapshot before), so nothing about it changes while the menu is up.
         self.settle_lift();
         let lift_parts = page_lift.map(|(entry, focus)| self.opener_parts(entry, focus));
+        // A page element's opener (a header pill) rides the page that carries it: the surface hanging from it is told where the
+        // control is DRAWN before every draw, as a bar member's is, so its morph starts and ends on the live control and not on
+        // where it stood when the menu opened (`Menu::track_opener`).
+        let page_opener = page_lift.zip(lift_parts.as_ref()).and_then(|((entry, focus), lift_parts)| {
+            let key = focus?;
+            let host = self.nav.tabs.stack.top().filter(|e| e.id == entry)?.inst.as_ref()?;
+            let Split { views, measure, .. } = rig.split();
+            let cx = lift_parts.page_cx::<H>(views, measure, entry, lift_parts.focus.clone(), self.nav.tabs.stack.beneath_id(entry));
+            Some((key, Focusable::<H>::place(&*host.screen, &key.elem, &cx, At::Drawn)?.rect))
+        });
+        if let Some((key, rect)) = page_opener {
+            for s in &mut self.nav.modals.surfaces {
+                if let Some(inst) = s.entry.inst.as_mut().filter(|i| i.screen.opener().is_some_and(|(entry, opener)| entry == key.entry && opener == Some(key))) {
+                    inst.screen.opener_rect(rect);
+                }
+            }
+        }
         let (_, host_render) = self.nav.modals.host_policy();
         // §9: armed for the LENGTH OF THE DRAW, and restored rather than cleared, exactly as the
         // page freeze is. Every framebuffer-sampling door is refused while it is up.
@@ -2598,8 +2642,7 @@ where
                     }
                     set.pages += 1;
                     set.bytes += inst.screen.render_report().bytes;
-                    if Z::CHROME < ceiling && top_entry == Some(e.id) && e.arg.chrome() == plx_machine::machine::Chrome::TabBar
-                        && inst.screen.focus_source() == FocusSource::Engine {
+                    if Z::CHROME < ceiling && top_entry == Some(e.id) && wears_bar::<H>(&e.arg, &*inst.screen) {
                         let mut chrome_parts = parts.clone();
                         chrome_parts.owner = InputOwner::Entry(e.id);
                         chrome_parts.focus = input.engine.read(chrome_parts.owner);

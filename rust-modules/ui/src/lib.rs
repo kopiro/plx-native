@@ -23,6 +23,7 @@ use std::os::raw::{c_char, c_int};
 pub mod qr;
 pub mod a11y; // accessibility ids: `<ns>.<path>` for every focusable element, so a UI test addresses one by id (plan a11y-ids D1, D2)
 pub mod anim;
+pub mod art_ground; // a programme's art full screen over the video plane's hole until the first frame (Live TV player)
 pub(crate) mod card_row;
 pub mod cards; // shared card sections (plan: shared-card-sections): Shelf, Grid, CardSource, and the card conformance suite
 pub mod marquee; // the focused run's looping glide: a tile's title and caption (card_row), cast name and role, menu rows (table)
@@ -77,7 +78,10 @@ pub mod master_detail; // RESTRUCTURE (spec §10): reusable two-region focus/ret
 // `Screen` mounted through `app::bridge` rather than a `Popover` reached through `app.rs`'s key
 // ladders. Its deletion readout now borrows the Session owner's immutable publication;
 // no module-level deletion counter remains for a newly mounted screen to poll.
-pub mod page_stack; // the drill-in page stack Tracks and More share
+pub mod page_stack; // the drill-in page stack and the focus-stop functions the menus share
+#[cfg(test)]
+mod menu_tests; // every transition of `menu`, and the illegal combinations
+pub mod menu; // THE menu component: a table of rows in glass / sheet / flat card, its page stack and motion (grew out of page_stack)
 pub mod panel_motion; // the resize/page-slide spring of the in-player table popovers (Tracks, More)
 
 pub mod breadcrumb; // 'Films > Collections' crumb (PR5)
@@ -85,6 +89,7 @@ pub mod hstack; // one gap between a run of measured items (UIStackView spacing)
 pub mod vstack; // the same stack top to bottom (VStack/VFlow over hstack's engine) + the alert head ladder
 pub mod page_header; // the page header row: one layout, paint, focus group and motion for the Library, Collections, Recommended and Watchlist pages
 pub mod page_regions; // the column NAV/HEADER/CONTENT/RAIL: one table for the pages' links, BACK and first seat
+pub mod time_grid; // every row of a list against one clock: the Live TV Guide's board (axis, cells, overlap travel, paging, paint)
 pub mod caption_policy; // "Under posters": what a focused poster's caption band shows and how tall it is (CONTRACT FREEZE: P3 fills)
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub(crate) mod poster_grid; // uniform six-column portrait geometry for collection-like pages
@@ -389,6 +394,50 @@ pub mod draw_census {
     }
 
     thread_local! {
+        static RRECTS: RefCell<Option<Vec<RRectFill>>> = const { RefCell::new(None) };
+        static ROUND: RefCell<Vec<(Rect, f32)>> = const { RefCell::new(Vec::new()) };
+    }
+    /// One rounded-rect fill a recording painter was handed ([`Painter::rrect`]): its screen rect, left and right
+    /// radius, effective colour, and the ROUNDED CLIP in force while it was drawn, as `(rect, radius)`.
+    /// [`note_ink`] carries the rect and the alpha and nothing else, and a fill that must follow a card's corners
+    /// (the Guide's aired shade) needs the radii and the clip: the outline a fill leaves is its own corners cut by
+    /// the clip.
+    #[derive(Clone, Copy, Debug)]
+    pub struct RRectFill {
+        pub rect: Rect,
+        pub rl: f32,
+        pub rr: f32,
+        pub col: [f32; 4],
+        pub round: Option<(Rect, f32)>,
+    }
+    pub fn note_rrect(rect: Rect, rl: f32, rr: f32, col: [f32; 4]) {
+        let round = ROUND.with(|r| r.borrow().last().copied());
+        RRECTS.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push(RRectFill { rect, rl, rr, col, round });
+            }
+        });
+    }
+    /// A recording painter opened a rounded clip scope ([`crate::screen::ClipScope::open_rounded_in`]), which for a
+    /// recording painter changes no GL state and is otherwise invisible: `rect` is as placed, `radius` under the zoom.
+    pub fn open_round(rect: Rect, radius: f32) {
+        ROUND.with(|r| r.borrow_mut().push((rect, radius)));
+    }
+    /// That scope closed.
+    pub fn close_round() {
+        ROUND.with(|r| {
+            r.borrow_mut().pop();
+        });
+    }
+    /// Every rounded-rect fill a recording painter is handed while `f` runs, in draw order. A separate log, so the
+    /// census [`capture`] returns (and the hashes frozen from it) is unchanged.
+    pub fn capture_rrects(f: impl FnOnce()) -> Vec<RRectFill> {
+        RRECTS.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        RRECTS.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+
+    thread_local! {
         static RINGS: RefCell<Option<Vec<(Rect, f32)>>> = const { RefCell::new(None) };
     }
     /// A recording painter was handed a hollow ring ([`Painter::rring`]) of corner radius `rad` in `r`:
@@ -541,6 +590,11 @@ pub mod draw_census {
         static CLIP: std::cell::Cell<Option<Rect>> = const { std::cell::Cell::new(None) };
     }
     pub fn note_run(mut run: Run) {
+        // a speculative pass (the text prewarm's walk of a page no frame is drawing) draws nothing: its runs are
+        // not what a frame showed
+        if crate::rec::speculating() {
+            return;
+        }
         run.label = LABEL.with(|c| c.get());
         RUNS.with(|l| {
             if let Some(v) = l.borrow_mut().as_mut() {
@@ -1180,7 +1234,10 @@ impl Painter {
     }
     pub fn rrect(self, r: Rect, rl: f32, rr: f32, col: [f32; 4]) {
         #[cfg(any(test, feature = "test-support"))]
-        if self.records() { draw_census::note_ink(2, self.place(r), self.c(col)[3]); }
+        if self.records() {
+            draw_census::note_ink(2, self.place(r), self.c(col)[3]);
+            draw_census::note_rrect(self.place(r), self.px(rl), self.px(rr), self.c(col));
+        }
         if self.declare(r, 2, |data| {
             use frame::backdrop::Value;
             rl.record(data);

@@ -2,6 +2,7 @@
 use super::*;
 use crate::registry::{MediaDeleteRequest, ScreenInputsLike};
 use plx_plex::plex::DeleteResult;
+use plx_ui::screen::{Activate, AxisMask, DrawFrame, EdgeRule, ElemKind, GroupKind, Hover, Seat, Stop};
 use plx_ui::decision_alert::{Answers, Choice, DecisionAlert};
 use plx_os::i18n::msg;
 
@@ -23,12 +24,16 @@ mod tests {
     use super::super::tests::{HostFixture, with_cx};
     use plx_machine::machine::{InputEvent, InstanceId, MachineId, PressId, Source, Tick};
 
-    fn question() -> DeleteUi {
+    fn pending() -> DeleteUi {
         let mut ui = DeleteUi::new();
         ui.title = "Disposable movie".into();
         ui.request = Some(MediaDeleteRequest { sid: plx_plex::plex::ServerId::UNSET,
             rk: "42".into(), kind: 0, show_rk: String::new(), profile: 7,
             key: plx_plex::plex::ClientKey { instance: 1, token: 2, grant: 3 } });
+        ui
+    }
+    fn question() -> DeleteUi {
+        let mut ui = pending();
         ui.open();
         ui
     }
@@ -94,10 +99,21 @@ mod tests {
             host: EntryId(1), focus: None, anchor: [0; 4], loaded_episode: false,
             from_home: false, catalog: None, watchlist: None };
         let mut menu = ItemMenuScreen::new(EntryId(7), arg);
-        menu.deletion = question();
+        menu.deletion = pending();
         with_cx(|cx| menu.build_rows(<HostFixture as crate::registry::MetadataLike>::metadata(cx), DeckPress::Details));
-        assert!(matches!(menu.form.binding_at(0), Some(binding) if binding.id == ItemRow::Delete));
-        assert!(menu.form.binding_at(1).is_none());
+        assert!(matches!(menu.menu.form().binding_at(0), Some(binding) if binding.id == ItemRow::Delete));
+        assert!(menu.menu.form().binding_at(1).is_none());
+        assert!(!menu.deletion.visible());
+        with_cx(|cx| {
+            let mut out = Vec::new();
+            let mut present = plx_machine::present::Present::new();
+            menu.step(&ScreenEvent::Activate(ItemRow::Delete.focus_key()), cx,
+                &mut Effects::new(&mut out, MachineId::Instance(InstanceId(8)), &mut present));
+            assert!(out.is_empty(), "activating Delete must not submit a request");
+            assert!(menu.deletion.visible());
+            let key = FocusKey { entry: EntryId(7), elem: ItemRow::Delete.focus_key() };
+            assert_eq!(<ItemMenuScreen as Focusable<HostFixture>>::reconcile(&menu, key, cx).elem, CANCEL);
+        });
     }
 }
 impl DeleteUi {

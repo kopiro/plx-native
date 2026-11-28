@@ -58,6 +58,8 @@
   "widgets.card.show_new_episode": "{show} · Novo episódio",
   "widgets.failure.jail": "Falha na reprodução — o ambiente isolado deste televisor bloqueia o vídeo nativo",
   "widgets.failure.refused": "Falha na reprodução — o servidor não consegue reproduzir nem converter este ficheiro",
+  "widgets.failure.direct_play_disabled": "Falha na reprodução — a Reprodução direta está desativada",
+  "widgets.failure.no_backend": "Falha na reprodução — este televisor não consegue reproduzir este ficheiro no PlxNative",
   "widgets.failure.audio_only": "Falha na reprodução — o servidor só enviou áudio",
   "widgets.failure.no_video": "Falha na reprodução — o ficheiro não tem vídeo",
   "widgets.failure.open": "Falha na reprodução — não foi possível abrir o fluxo multimédia",
@@ -65,6 +67,7 @@
   "widgets.failure.tv_rejected": "Falha na reprodução — o televisor rejeitou o fluxo",
   "widgets.reason.jail": "O ambiente isolado deste televisor não dá à app acesso a /dev/rtkmem",
   "widgets.reason.refused": "O servidor não consegue reproduzir nem converter este ficheiro",
+  "widgets.reason.no_backend": "O PlxNative ainda não consegue reproduzir este ficheiro neste televisor",
   "widgets.reason.audio_only": "O servidor só enviou áudio — não encontrou nenhum destino de transcodificação de vídeo utilizável",
   "widgets.reason.no_video": "Este ficheiro não tem faixa de vídeo",
   "widgets.reason.open": "Não foi possível abrir o fluxo multimédia",
@@ -258,5 +261,10 @@
   "widgets.failure.change_quality": "Mudar qualidade",
   "widgets.watch.intro": "Assistir à introdução",
   "widgets.verdict.tuners_busy": "Todos os sintonizadores estão ocupados",
-  "widgets.live.channel_context": "{number} · {programme}"
+  "widgets.live.channel_context": "{number} · {programme}",
+  "widgets.live.badge": "EM DIRETO",
+  "widgets.live.next_at": "A seguir, às {time}",
+  "widgets.live.entry_none": "Nenhum canal {number}",
+  "widgets.live.entry_more": "+{count} mais · ▲ ▼ para rolar",
+  "widgets.live.playing": "A reproduzir"
 }

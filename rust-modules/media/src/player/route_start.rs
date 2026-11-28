@@ -1297,7 +1297,7 @@ pub(crate) fn finish_release_for_test(pa: &mut super::adapter::PlayerAdapter) {
 /// Releases them the frame after the Engine failed, the same teardown an app switch uses
 /// ([`suspend_bufferfeed`]: the session, URL and transcode session stay, nothing is reported as
 /// stopped). What the read-out and its actions need survives it, in the session: the cause
-/// ([`crate::route::note_engine_failure`], so `state()` and `error_now` still answer) and the
+/// ([`crate::route::note_engine_failure`], so `state()` and the failure derivation still answer) and the
 /// playhead a retry resumes from (the unpresented-resume slot `retry_failed_playback` reads).
 /// Try again, Play automatically and a quality pick start a new playback from scratch, and Back
 /// ends the session with a real stop, so none of them needs the loaded pipeline.
@@ -1555,11 +1555,17 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
 
 /// A logical stop leaves the last addressed evidence available for the next report tick. The
 /// next physical start calls `begin_attempt_view` and clears it to Unknown for the new attempt.
+///
+/// The end of stream is the exception: a stop ends the playback and its end with it, as the Feed's
+/// `SessionReset` does for its readout. A URI attempt's `ended` left standing is what the next play
+/// finds while its resolve is in flight (no new attempt has replaced the view yet), and the loop's
+/// end-of-stream rule exits that play's page at once.
 fn mark_attempt_stopped(ps: &mut crate::route::PlaybackSession) {
     let Some(attempt) = ps.attempt_view().attempt() else { return; };
     let Some(backend) = ps.attempt_view().backend() else { return; };
     let mut facts = *ps.attempt_view().facts();
     facts.started = Some(false);
+    facts.ended = None;
     if backend == super::attempt_view::Backend::Uri && facts.runtime_failure.is_none() {
         facts.status = Some(plx_playback_contract::readout::PlaybackState::Idle);
     }

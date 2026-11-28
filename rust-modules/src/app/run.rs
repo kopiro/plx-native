@@ -391,11 +391,15 @@ fn poll_player_release(app: &mut App) {
 /// The clock reading ([`super::bridge::Bridge::publish_clock`], from [`clock::reading`], this call
 /// being that door's one caller too) goes out the same way, once: the `AppViews::wall` and the Live TV
 /// store's `now` are both taken from it, and it is nothing under a replay.
+///
+/// Returns whether the bar's clock face changed ([`super::bridge::Bridge::publish_clock`]): a new
+/// minute owes the settled screen one frame, which the caller asks for as present damage, the way a
+/// player-presentation change does. The same minute is `false`, so nothing repaints per frame.
 fn publish_frame(bridge: &mut super::bridge::Bridge, session: &plx_media::route::PlaybackSession,
-    was_player: bool, viewer_paused: Option<bool>) {
+    was_player: bool, viewer_paused: Option<bool>) -> bool {
     bridge.publish_playback(session, was_player || plx_media::route::is_preview(session), viewer_paused);
     bridge.publish_today(clock::today());
-    bridge.publish_clock(clock::reading());
+    bridge.publish_clock(clock::reading())
 }
 
 /// **The frame's clock and the click's spring** (spec §3.3 step 3's head).
@@ -796,7 +800,6 @@ fn hud_model(
         covered: false,
         skip_progress: None,
         is_episode,
-        is_live,
         end_time: projected_end_time,
         // The frame's published wall time: the live airing line is worded from it at draw, and the
         // screen's clock fingerprint follows it.
@@ -823,11 +826,24 @@ fn hud_model(
 /// The frame publication phase: retained views (the native repair state is already on the session,
 /// copied by `poll_player_release`), then the player's input model.
 fn publish_product_frame(app: &mut App, was_player: bool) {
+    // The player's failure, captured ahead of every publication of it (the presentation below reads it, and the
+    // diagnostics panel after this phase): whatever ran earlier in the frame, this is the one that cannot be skipped.
+    super::player_presentation::capture_failure(app);
     if app.runtime.bridge(&mut app.bridge).publish_player_presentation(&app.player.session) {
         app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
     }
-    publish_frame(&mut app.runtime.bridge(&mut app.bridge), &app.player.session, was_player,
-        app.adapters.player.backend_viewer_paused());
+    let clock_was_shown = app.runtime.bridge(&mut app.bridge).bar_clock(&app.pages).is_some();
+    if publish_frame(&mut app.runtime.bridge(&mut app.bridge), &app.player.session, was_player,
+        app.adapters.player.backend_viewer_paused())
+        && (clock_was_shown || app.runtime.bridge(&mut app.bridge).bar_clock(&app.pages).is_some())
+    {
+        // The bar's clock reached a new minute (or lost its zone) while the bar shows one: one frame
+        // to show it, however still the screen is, in the scope that owns input (a menu over the page
+        // does not retake the page's frozen snapshot for it). A page that shows no bar owes nothing.
+        let scope = app.pages.input_scope();
+        app.pages.present.note_in_scope(scope,
+            plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Lifecycle));
+    }
     publish_player_model(app);
 }
 
@@ -2448,14 +2464,26 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // failure there is. It observes the value the HUD renders and reports only transitions,
         // so the steady-state cost is one atomic load.
         let terminal_source = app.adapters.player.terminal_failure_source(&app.player.session);
+        // The failure of this frame's state, captured ahead of both readers below (the report and the request metrics).
+        super::player_presentation::capture_failure(app);
         plx_media::player::report::tick_with_source(&app.player.session, terminal_source);
+        // A version picked on the failure screen is remembered once it plays: the state both backends derive, so a URI
+        // set (which never reaches the Feed pump's decoded-frame door) remembers it as a Feed one does.
+        if plx_media::route::version_on_trial_pending(&app.player.session) && plx_media::player::is_playing(&app.player.session) {
+            plx_media::route::remember_version_that_played(&mut app.player.session);
+        }
         if plx_media::player::state(&app.player.session)
             == plx_media::player::PlaybackState::Error {
-            app.player.session.finish_metric_request(
-                plx_media::player::attempt_metrics::RequestOutcome::Failed(
-                    plx_media::player::backend::handled_failure(
-                        plx_media::player::error_now(&app.player.session).kind)));
-            app.adapters.player.sync_request_metrics(&mut app.player.session);
+            if let Some(kind) = plx_media::route::failure(&app.player.session).map(plx_media::player::PlaybackFailure::kind) {
+                app.player.session.finish_metric_request(
+                    plx_media::player::attempt_metrics::RequestOutcome::Failed(
+                        plx_media::player::backend::handled_failure(kind)));
+                app.adapters.player.sync_request_metrics(&mut app.player.session);
+            } else {
+                // Unreachable: captured just above. Refused, not guessed at.
+                plx_media::player::log("request metrics: an Error with no captured failure");
+                debug_assert!(false, "the failure is captured ahead of the request metrics");
+            }
         }
         // end-of-stream: the pipeline drained at the credits → hand off to Up Next when the
         // show has another episode queued and the Next episode preference is not Off, else leave
@@ -3083,6 +3111,8 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
             // exact publication boundary; latches make a healthy/no-change frame idempotent.
             |app| {
                 let terminal_source = app.adapters.player.terminal_failure_source(&app.player.session);
+                // …and capture the refused plan's failure first: the report reads the captured value.
+                super::player_presentation::capture_failure(app);
                 plx_media::player::report::tick_with_source(&app.player.session, terminal_source);
             },
         );
@@ -3479,7 +3509,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             };
                             plx_gfx::gfx::draw_number(
                                 *fps_shown,
-                                plx_base::surface::LOGICAL_W - 70.0,
+                                fps_counter_right_x(bridge.bar_clock(pages).map(|clock| clock.w)),
                                 64.0,
                                 46.0,
                                 fps_col.as_ptr(),
@@ -3495,6 +3525,16 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                 });
             });
     (vx, vy, vw, vh)
+}
+
+/// **Where the dev fps counter's `draw_number` anchor stands.** The counter (a `devtools` build only;
+/// a release build draws none) has always stood in the bar's band with its right digit on the right
+/// margin, which is where the bar's clock now ends. So it steps LEFT of the clock: by the clock's own
+/// width and one [`plx_ui::theme::space::SM`] of air, the rung the bar keeps between its own parts, and
+/// stays where it was when the bar shows no clock this frame ([`super::bridge::Bridge::bar_clock`]).
+#[cfg(feature = "devtools")]
+fn fps_counter_right_x(clock_w: Option<f32>) -> f32 {
+    plx_base::surface::LOGICAL_W - 70.0 - clock_w.map_or(0.0, |w| w + plx_ui::theme::space::SM)
 }
 
 /// **A screen visit ended: report how the app felt on it (`route.left`) and start the next one
@@ -6040,6 +6080,90 @@ pub(in crate::app) mod lifecycle_regression_tests {
         assert!(unsafe { ingress_token(&mut app, &mut fr, "hang-raw:1") });
     }
 
+    /// **The failure is captured before it is published.** A session in Error with nothing captured yet is captured by the
+    /// frame's publication itself, ahead of the presentation that reads it, so the frame carries the read-out of the failure
+    /// the session stands for, with the attempt the capture was made under.
+    #[test]
+    fn the_capture_precedes_publication() {
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        plx_media::route::refuse_for_test(&mut app.player.session, plx_media::route::PlayVerdict::DirectPlayDisabled);
+        assert!(plx_media::route::failure(&app.player.session).is_none(), "premise: nothing is captured before a frame");
+        publish_product_frame(&mut app, true);
+        let failure = plx_media::route::failure(&app.player.session).cloned().expect("the publication captured the failure");
+        assert_eq!(failure.attempt(), plx_media::player::report::attempt_id());
+        let readout = app.runtime.bridge(&mut app.bridge).views().inputs.player_presentation.failure.clone()
+            .expect("the frame's presentation carries the read-out");
+        assert_eq!(readout.attempt(), failure.attempt());
+        assert_eq!(readout.reason(), plx_media::route::PlayVerdict::DirectPlayDisabled.text());
+    }
+
+    /// **A settled screen that shows the bar owes its clock one frame a minute, and no more.** The loop's
+    /// publication phase turns a new minute's face into present damage (the way a player-presentation
+    /// change does), and a frame published again within the minute adds none: the idle gate keeps its
+    /// whole saving, with no polling and no per-frame invalidation.
+    #[test]
+    fn a_new_minute_owes_the_settled_bar_one_frame_and_the_same_minute_none() {
+        const AT: i64 = 1_795_649_400;
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        clock::pin_for_test(AT * 1_000, 3_600);
+        super::super::bridge::nav_root(&mut app.pages, AppArg::Home);
+        for i in 0..40 { frame(&mut app, i * 16); }
+        publish_product_frame(&mut app, false);
+        assert!(app.route() == AppArg::Home, "premise: Home is on top");
+        assert!(app.runtime.bridge(&mut app.bridge).bar_clock(&app.pages).is_some(), "premise: Home shows the bar and its clock");
+        let first = app.pages.present.damage_epoch();
+        for ms in [0, 17, 1_000, 59_999] {
+            clock::pin_for_test(AT * 1_000 + ms, 3_600);
+            publish_product_frame(&mut app, false);
+            assert_eq!(app.pages.present.damage_epoch(), first, "{ms} ms into the same minute: no damage");
+        }
+        clock::pin_for_test((AT + 60) * 1_000, 3_600);
+        publish_product_frame(&mut app, false);
+        let next = app.pages.present.damage_epoch();
+        assert!(next > first, "the minute edge: one frame owed");
+        publish_product_frame(&mut app, false);
+        assert_eq!(app.pages.present.damage_epoch(), next, "and published again within the minute, none");
+        clock::unpin_for_test();
+    }
+
+    /// **No bar, no frame owed**: while no page shows the bar (nothing mounted here; a detail page, the
+    /// player, a tucked bar answer the same, `chrome_clock_route_tests`), a new minute raises no damage,
+    /// so it can never force a frozen snapshot's retake for a clock nobody can see.
+    #[test]
+    fn a_new_minute_owes_no_frame_while_no_page_shows_the_bar() {
+        const AT: i64 = 1_795_649_400;
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        clock::pin_for_test(AT * 1_000, 3_600);
+        publish_product_frame(&mut app, false);
+        let first = app.pages.present.damage_epoch();
+        assert!(app.runtime.bridge(&mut app.bridge).bar_clock(&app.pages).is_none(), "premise: no bar");
+        clock::pin_for_test((AT + 60) * 1_000, 3_600);
+        publish_product_frame(&mut app, false);
+        assert_eq!(app.pages.present.damage_epoch(), first, "the minute edge with no bar on screen: no damage");
+        clock::unpin_for_test();
+    }
+
+    /// **The dev fps counter and the bar's clock do not collide.** The counter's right digit ends
+    /// where the clock does (the margin, 1824); with a clock on the bar it steps left of the clock by
+    /// at least the bar's own 16 px rung, whatever the face's width, and with none it has not moved.
+    #[cfg(feature = "devtools")]
+    #[test]
+    fn the_dev_fps_counter_steps_left_of_the_bars_clock() {
+        // `draw_digit` lays its digits `1.55 * s` apart, the rightmost starting `1.55 * s` left of the anchor
+        // and `s` wide, so its right edge is `0.55 * s` left of it (s = 46 as `draw` passes).
+        let digit_right = |right_x: f32| right_x - 0.55 * 46.0;
+        assert!((digit_right(fps_counter_right_x(None)) - plx_ui::widgets::TOP_BAR_CLOCK_RIGHT).abs() < 1.0,
+            "no clock: the counter is where it always was, on the margin");
+        for w in [62.0, 76.0, 130.0] {
+            let left = plx_ui::widgets::top_bar_clock_frame(w).x;
+            let right = digit_right(fps_counter_right_x(Some(w)));
+            assert!(right <= left - plx_ui::theme::space::SM + 1.0, "{w}: the counter ends at {right}, the clock begins at {left}");
+        }
+    }
+
     /// **`state:<nonce>` notes no damage and is not recorded** (the a11y-ids plan, D7): the token is
     /// taken before `dispatch_remote_token` (which notes input damage for every token it sees) and
     /// before the recorder's direct-token path, so a read-back leaves the present gate and the
@@ -7136,6 +7260,7 @@ pub(in crate::app) mod lifecycle_regression_tests {
                 chapters: (1..=2).map(chapter).collect(),
                 hdr: false,
                 sub_choice: Default::default(),
+                versions: Vec::new(),
             }))));
             super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
             frame(&mut app, 16);
@@ -8633,7 +8758,7 @@ pub(in crate::app) mod lifecycle_regression_tests {
             let meta = self.app.runtime.metadata_view();
             let mut menu = plx_appkit::track_menu::TrackMenuState::new(&self.app.player.session, meta, 1, Vec::new());
             assert!(menu.focus_id(plx_appkit::track_menu::TrackRow::SubForcedOnly), "the Forced only row is on the page");
-            let plx_appkit::track_menu::TrackOk::Commit { commit, .. } = menu.on_ok(meta) else {
+            let plx_appkit::track_menu::TrackOk::Commit { commit, .. } = menu.step(&self.app.player.session, meta, plx_ui::menu::Event::Ok(plx_ui::form::FormId::key(&plx_appkit::track_menu::TrackRow::SubForcedOnly).0)) else {
                 panic!("the menu committed nothing for Forced only");
             };
             super::super::playback::commit_track(&mut self.app.player.session,
@@ -8647,7 +8772,7 @@ pub(in crate::app) mod lifecycle_regression_tests {
             let index = playing.audio.iter().position(|s| s.id == id).unwrap_or_else(|| panic!("no audio {id}"));
             let mut menu = plx_appkit::track_menu::TrackMenuState::new(&self.app.player.session, meta, 0, Vec::new());
             assert!(menu.focus_id(plx_appkit::track_menu::TrackRow::Audio(index)), "the audio row is on the page");
-            let plx_appkit::track_menu::TrackOk::Commit { commit, .. } = menu.on_ok(meta) else {
+            let plx_appkit::track_menu::TrackOk::Commit { commit, .. } = menu.step(&self.app.player.session, meta, plx_ui::menu::Event::Ok(plx_ui::form::FormId::key(&plx_appkit::track_menu::TrackRow::Audio(index)).0)) else {
                 panic!("the menu committed nothing for audio {id}");
             };
             super::super::playback::commit_track(&mut self.app.player.session,
@@ -9774,7 +9899,7 @@ pub(in crate::app) mod lifecycle_regression_tests {
 
         assert!(!plx_media::route::play_pending());
         assert!(!rig.app.player.session.finished);
-        assert_eq!(plx_media::player::error_now(&rig.app.player.session).kind, plx_media::player::FailureKind::ServerStopped);
+        assert_eq!(plx_media::player::error_for_test(&rig.app.player.session).kind, plx_media::player::FailureKind::ServerStopped);
         assert_eq!(plx_media::route::up_next(&rig.app.player.session).unwrap().rk, "2");
     }
 
@@ -10070,12 +10195,22 @@ pub(in crate::app) mod lifecycle_regression_tests {
             return;
         };
         let mut fr = refuse_restore(&mut rig);
+        // The refused restore leaves the player Idle with no engine and no read-out of its own (it never captures a
+        // failure, however many frames run), so the press this test makes has no button to
+        // come from: capture the transient failure the read-out would draw *Try again* on (the door judges a recovery
+        // against the captured failure), exactly as the frame does for the dev trigger's "connection" arm.
+        plx_media::player::observe_failure(
+            &mut rig.app.player.session,
+            plx_media::player::FailureTrigger { arm: Some("connection"), armed: false },
+            plx_media::player::report::attempt_id(),
+        );
+        assert!(plx_media::route::failure(&rig.app.player.session).is_some(), "rig: the failure is captured");
 
         player_requests(
             &mut rig.app.player,
             &mut rig.app.adapters.player,
             &mut rig.app.repause_at,
-            vec![plx_screens::registry::PlayerReq::RetryPlayback],
+            vec![plx_screens::registry::PlayerReq::Recover(plx_media::player::Recovery::RetrySame)],
             fr.now,
             &mut rig.app.refresh_hubs,
             &mut rig.app.pages,

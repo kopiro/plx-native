@@ -816,7 +816,7 @@ fn a_stale_release_landing_installs_nothing_and_stops_both_encoders() {
     // The two halves the claim worker would run, driven by hand so the race is deterministic.
     let plan = plan_original_recovery(&mut ps, &action.ticket, 60, RecoveryCause::EnhancementReleased)
         .expect("a release the session allows");
-    let OriginalRecoveryNet::Remux(prepared) = run_original_recovery(&plx_base::task::OffFrame::for_test(), &plan).expect("the server answers") else {
+    let OriginalRecoveryNet::Remux(prepared) = run_original_recovery(&plx_base::task::OffFrame::for_test(), &plan, &mut PutTrail::default()).expect("the server answers") else {
         panic!("a remux candidate releases to a remux");
     };
     let replacement = prepared.replacement.clone();
@@ -827,6 +827,7 @@ fn a_stale_release_landing_installs_nothing_and_stops_both_encoders() {
         owner: FlightOwner::Claim(action.clone()),
         pending_seek: -1,
         user_target: 0,
+        selection: None,
         result: RetranscodeClaimResult::OriginalRecovery(Box::new(OriginalRecoveryLanding {
             plan,
             net: OriginalRecoveryNet::Remux(prepared),
@@ -1462,6 +1463,20 @@ fn a_remux_that_cannot_be_asked_for_codecs_guesses_what_the_server_would_send() 
     assert_eq!(remux_output_acodec(&plx_os::devcaps::caps(), true, Some(&a("eac3", 6)), "truehd"), "ac3");
     // no carried track: the file's own default
     assert_eq!(remux_output_acodec(&plx_os::devcaps::caps(), false, None, "eac3"), "eac3");
+}
+
+/// #1537: a `DTS/6` row lets the direct-play ask admit a 7.1 DTS-HD MA (fed as its core), but an
+/// encoder session's profile keeps the row on the track's layout, so the server converts it: the
+/// guess must name the conversion's `ac3`, not the `dca` that never arrives.
+#[test]
+fn a_remux_guess_follows_the_session_profiles_dts_bound() {
+    let mut caps = plx_os::devcaps::Caps::assumed();
+    caps.audio.push_str(",dts");
+    caps.audio_channels.insert("dts".into(), 6);
+    let a = |ch| CarriedAudio { codec: "dca".into(), channels: ch, ..a1() };
+    assert!(plx_plex::plex::is_dp_audio_track_with(&caps, "dca", 8, 48000), "control: the direct-play ask admits the core");
+    assert_eq!(remux_output_acodec(&caps, false, Some(&a(8)), "dca"), "ac3");
+    assert_eq!(remux_output_acodec(&caps, false, Some(&a(6)), "dca"), "dca");
 }
 
 #[test]
@@ -2636,6 +2651,7 @@ fn the_stale_arms_of_the_drain_stop_their_encoder_off_the_frame_thread() {
         }),
         pending_seek: -1,
         user_target: 0,
+        selection: None,
         result: RetranscodeClaimResult::Retranscode(AppliedRetranscode {
             recovery_offer: None,
             qsess: qsess.to_owned(),
@@ -2760,6 +2776,7 @@ fn a_stale_landing_at_drain_time_stops_the_leaked_encoder_instead_of_installing_
         owner: FlightOwner::Claim(action.clone()),
         pending_seek: -1,
         user_target: 0,
+        selection: None,
         result: RetranscodeClaimResult::Retranscode(AppliedRetranscode {
             recovery_offer: None,
             qsess: "leaked-worker-session".to_string(),
@@ -2825,6 +2842,7 @@ fn a_deferred_audio_pick_replayed_from_settle_route_start_does_not_trip_the_bloc
         DeferredOriginalEffects {
             quality: None,
             audio: Some(a3()),
+            audio_memo: None,
             reconcile: false,
         },
     ));

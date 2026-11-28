@@ -206,6 +206,8 @@ pub struct FixtureRow {
     /// elsewhere while its picture lags, as Home's does across the hero/grid door). It reads the
     /// context's focus, so a resolution handed a stale focus does not see it.
     pub unloaded_while_focused: bool,
+    /// How far the row is drawn from where it rests, vertically (a page that scrolls): added to a `Drawn` placement only.
+    pub drawn_dy: f32,
 }
 
 impl Focusable<FixtureHost> for FixtureRow {
@@ -238,11 +240,12 @@ impl Focusable<FixtureHost> for FixtureRow {
             _ => Step::Edge,
         }
     }
-    fn place(&self, key: &u32, _cx: &Cx<'_, FixtureHost>, _at: At) -> Option<Placed> {
+    fn place(&self, key: &u32, _cx: &Cx<'_, FixtureHost>, at: At) -> Option<Placed> {
         if (*key as usize) < self.len {
             let r = Rect::new(*key as f32 * 200.0, 100.0, 180.0, 180.0);
+            let drawn = Rect { y: r.y + self.drawn_dy, ..r };
             Some(Placed {
-                rect: r,
+                rect: if at == At::Drawn { drawn } else { r },
                 rest_rect: r,
                 clip: Rect::FULL,
                 index: Some(*key),
@@ -406,6 +409,10 @@ impl FixtureScreen {
     /// The row's element count, as a store landing would set it (a row longer than the canvas).
     pub(crate) fn set_row_len(&mut self, len: usize) {
         self.row.len = len;
+    }
+    /// The row is drawn `dy` px from where it rests (the page scrolls).
+    pub(crate) fn set_drawn_dy(&mut self, dy: f32) {
+        self.row.drawn_dy = dy;
     }
     /// The row's first element whose data has not landed (an unloaded paged slot).
     pub(crate) fn set_unloaded_from(&mut self, from: usize) {
@@ -666,6 +673,8 @@ pub struct FixtureModal {
     pub scrim_alpha: f32,
     /// When set the dim is over the video plane (`Scrim::over_video`).
     pub scrim_over_video: bool,
+    /// When set the dim is asked only over a held host page (`Scrim::over_host`).
+    pub scrim_over_host: bool,
     /// Optional lifted element callback for exercising the dispatcher's borrowed frame context.
     /// The bar member this surface hangs from ([`Screen::bar_opener`]), and the rect the dispatcher
     /// last handed it ([`Screen::opener_rect`]).
@@ -756,6 +765,7 @@ impl FixtureModal {
             last_navigation: Default::default(),
             scrim_alpha: 0.0,
             scrim_over_video: false,
+            scrim_over_host: false,
             bar_opener: None,
             opener_seen: Vec::new(),
             opener_alpha: 1.0,
@@ -792,6 +802,7 @@ impl FixtureModal {
                                     kind: ElemKind::Card,
                                     unloaded_from: usize::MAX,
                                     unloaded_while_focused: false,
+                drawn_dy: 0.0,
                                 },
                                 draw_at: 0,
                                 recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
@@ -1016,6 +1027,9 @@ impl Screen<FixtureHost> for FixtureModal {
         if self.scrim_over_video {
             return super::screen::Scrim::over_video(self.scrim_alpha);
         }
+        if self.scrim_over_host {
+            return super::screen::Scrim::over_host(self.scrim_alpha);
+        }
         super::screen::Scrim::dim(self.scrim_alpha)
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
@@ -1132,6 +1146,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
                 kind,
                 unloaded_from: usize::MAX,
                 unloaded_while_focused: false,
+                drawn_dy: 0.0,
             },
             draw_at: 0,
             recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
@@ -1417,6 +1432,7 @@ impl super::adapters::Adapters<FixtureHost> for FixtureRig {
                     h: 4,
                     rgba: vec![0; 64].into_boxed_slice(),
                     backdrop: None,
+                    ink: None,
                 }),
             }),
         }
@@ -1558,6 +1574,7 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
             h: 4,
             rgba: vec![0; 64].into_boxed_slice(),
             backdrop: None,
+            ink: None,
         }),
     });
     d.budget.note_queued(rig.cache.has_pending());
@@ -1893,7 +1910,7 @@ fn the_fixture_focusables_conform_to_the_accessibility_id_contract() {
         hold_hint: Default::default(),
     };
     for (kind, role) in [(ElemKind::Card, Role::Card), (ElemKind::Bare, Role::Row), (ElemKind::Control, Role::Button)] {
-        let row = FixtureRow { len: 5, group: GroupId(1), entry: EntryId(1), prepared: 0, drawn: 0, kind, unloaded_from: 3, unloaded_while_focused: false };
+        let row = FixtureRow { len: 5, group: GroupId(1), entry: EntryId(1), prepared: 0, drawn: 0, kind, unloaded_from: 3, unloaded_while_focused: false, drawn_dy: 0.0 };
         super::a11y::conformance(&row, &cx);
         let third = row.a11y(&2, &cx).unwrap();
         assert_eq!(third.role, role);
@@ -2316,7 +2333,7 @@ fn a_poster_result_is_accepted_in_the_drain_and_uploaded_in_prepare() {
     // the plumbing. Accepting must not itself reach the cache's resolved/uploaded state.
     rig.cache.accept(PosterReady {
         key: PosterKey(11),
-        result: Ok(Decoded { w: 4, h: 4, rgba: vec![0; 64].into_boxed_slice(), backdrop: None }),
+        result: Ok(Decoded { w: 4, h: 4, rgba: vec![0; 64].into_boxed_slice(), backdrop: None, ink: None }),
     });
     assert!(rig.cache.resolve(PosterKey(11)).is_none(), "accepted, not yet uploaded — prepare has not run");
 
@@ -2351,7 +2368,7 @@ fn a_bare_cache_driven_past_capacity_does_not_latch_pending_forever() {
     for i in 0..9u32 {
         rig.cache.accept(PosterReady {
             key: PosterKey(100 + i),
-            result: Ok(Decoded { w: 4, h: 4, rgba: vec![0; 64].into_boxed_slice(), backdrop: None }),
+            result: Ok(Decoded { w: 4, h: 4, rgba: vec![0; 64].into_boxed_slice(), backdrop: None, ink: None }),
         });
         d.budget.note_queued(rig.cache.has_pending());
         let r = d.frame(&mut rig, tick(16 * (i + 1)), vec![], vec![], &mut NoTap);

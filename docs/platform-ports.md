@@ -860,9 +860,12 @@ split by who reads it (critic M4):
 1. `tv::Services` (`plx_os::tv`, installed once by `run_application`) holds what LOWER layers read through the
    private `tv::port()` (F5):
    - `identity { probe_device, start_capability_probe, repair_native_video: Option<fn() -> Result<(), Failure>>,
-     device_files: Files, system_locale, sound_output }` (`repair_native_video` is optional: `None` is a platform
-     with nothing to repair, and the repair then answers `Failure::Unsupported`; `device_files` is the reader
-     `devcaps` parses through, `Files::NONE` for a platform with none);
+     packet_probe: Option<fn(Command) -> Status>, device_files: Files, system_locale, sound_output }`
+     (`repair_native_video` is optional: `None` is a platform with nothing to repair, and the repair then answers
+     `Failure::Unsupported`; `packet_probe` (`plx_os::tv::packet_probe`) is too: `None` is a platform without the
+     packet-player probe, which answers `Unavailable`, and Settings > Diagnostics then shows no row for it; Tizen
+     states `esprobe::command`; `device_files` is the reader `devcaps` parses through, `Files::NONE` for a platform
+     with none);
    - `secure { seal, open, remove, mode }` (Target shape 4; until W2 `mode` is W3a's own once-set value);
    - `system { go_home, poll_home, deliver_toast }`;
    - `storage { authority }` (W8a): `Authority::Helper` (webOS: the LS2/DB8 storage helper is the canonical store of
@@ -1127,7 +1130,7 @@ Ecore names to `remote_token_key` pairs".
 ### 7. Entry, shutdown and the host doorway
 
 - Entry: webOS is `src/main.c` calling `plex_run`; desktop is the `plxnative-sim` bin; Tizen is a shared library
-  exporting the three calls below.
+  exporting the calls below (the header's `plx_host_*` functions).
 - Return (review B1, C2; critic F1, F8). `run_application` returns `Exit { code, release }` instead of `-> !`
   (`release` is `Release::Complete | Retained`). An early-boot refusal returns its code, and a played session
   returns after `run::shutdown` and the telemetry guard drop (F29). The executable entries own the process end:
@@ -1168,7 +1171,8 @@ Ecore names to `remote_token_key` pairs".
   running. The watchdog is disarmed before `on_stopped` and across `OnPause` (`watchdog::disarm`/`arm`, new in
   W3c, F42; `arm` re-captures the loop thread id).
 - The hosted contract is private to the Tizen platform (review M4, critic M6):
-  - `plx_host_start(const PlxHostApi *, const char *launch_json)`, `plx_host_post(const PlxHostEvent *)` and
+  - `plx_host_start(const PlxHostApi *, const char *launch_json)`, `plx_host_post(const PlxHostEvent *)`,
+    `plx_host_post_cue(const PlxHostCue *)` (a selected subtitle's cues, on a bounded lossy queue of their own) and
     `plx_host_stop()`. `PlxHostApi` starts with `size` and `abi_version`; the library reads a later field only
     when `size` covers it and refuses a table smaller than version 1.
   - Threads. `plx_host_start` runs on the host's main thread inside `OnCreate`: it creates the Ecore_Wl2 window and
@@ -1388,9 +1392,11 @@ Ecore names to `remote_token_key` pairs".
   artifact root has exactly one `plx_platform_*` in its normal dependency tree.
 - Tizen link shape: `cargo rustc --crate-type staticlib` of `plx_platform_tizen` (F24), then `cc -shared
   -Wl,--whole-archive` over it plus `svg.o` and a STATIC SDL2 + SDL2_ttf built from the pins in `ci/dependencies.json`
-  (`tizen/build-sdl.sh`), with `-z defs`, a version script that exports only the header's three `plx_host_*` names and
+  (`tizen/build-sdl.sh`), with `-z defs`, a version script that exports only the header's `plx_host_*` names and
   `-lGLESv2` (decision D3). No `main.c`, `access.c`, `exit.c`, `starfish.c` or `video_plane.c`, and none of
-  `sentry_context.o`, `crashtrace.o` or libass: nothing the emulator build reaches references them. No cdylib crate type,
+  `sentry_context.o` or `crashtrace.o`: nothing the emulator build reaches references them. libass is not linked in
+  either: the package carries the separate `libass-plx` the webOS package ships, from the same recipe, opened by name from
+  `res/` (`tizen-libass`; docs/tizen.md, "The subtitle renderer"). No cdylib crate type,
   so `ci/test_no_host_staticlib.py` is untouched. `docs/tizen.md` is the build's page.
 - CI: `cross-build` (`ci.yml:531`) stays required and webOS-only. The compile-only Tizen job is its own workflow,
   `.github/workflows/tizen.yml` (job `tizen-so`, not a required check): it builds the `.so` (`make PLATFORM=tizen tizen-so`),
@@ -2007,7 +2013,7 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
   MediaView, an ElmSharp window or a NUI window), so the host calls the native player directly (D1 = P1).
 - As landed (PR A, the host ABI and the C# player): `plx_host.h` is version 2: `player_open` and `player_verb`
   appended to `PlxHostApi` (size-gated, both or neither), player events through `plx_host_post` carrying an epoch
-  (still exactly three exports), `E_STALE` for an event of an epoch that is not live, and a player event queue of its
+  (three exports then; `plx_host_post_cue` came later for subtitle cues: `docs/tizen.md`, "Selected text subtitles"), `E_STALE` for an event of an epoch that is not live, and a player event queue of its
   own in `Hosted` (lossless but for position and buffering). A v1 host or NULL pointers is "no playback", never a
   refused start. The host is `PlxPlayer.cs` over `libcapi-media-player.so.0` (`PlayerNative.cs`): one video thread, a
   host-side position poll, events posted straight from native callbacks. The window is found host-side
@@ -2025,9 +2031,10 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
   `TizenQualifier` certifies the selected stream wherever it sits; whether the native index follows PMS's order on a retail
   set is unmeasured, `docs/tizen.md`, "The audio track is selected"), and `subtitle_off` (a second deviation, below). `TizenQualifier` certifies a source only where Standard would direct-play it
   and never a converted PMS output. `subtitle_choice = Off` (any subtitle stream, none selected) is carried: the driver states
-  `subtitle_off` (the host gives the player no subtitle, and the emulator run in `docs/tizen.md`, "Subtitles off", showed
-  none drawn from a default-flagged embedded track), so `SubtitleOff` is refused only on evidence without it. A selected
-  embedded subtitle still fails `subtitle_track`, a sidecar is `requires_client_subtitle`, and Boost Dialog, Auto on a
+  `subtitle_off` (the native player draws no subtitle of its own: the emulator runs in `docs/tizen.md`, "Subtitles off" and
+  "Selected text subtitles", showed it drawing none, whether or not a text track was selected and the cue callback registered), so `SubtitleOff` is refused only on evidence without it. A selected
+  embedded TEXT subtitle (every embedded subtitle stream SubRip or ASS) is drawn by the app from the host player's cues
+  (`plx_host_post_cue`, `docs/tizen.md`, "Selected text subtitles"), a picture or unmeasured one is declined `SubtitleNotCarried` by `TizenQualifier`, a sidecar is `requires_client_subtitle`, and Boost Dialog, Auto on a
   non-local link and a relay are refused before the qualifier is asked; with no Feed and `qualify_pms` Unknown each ends as
   `NoQualifiedBackend` (the resolver tests pin them); a track pick
   the driver cannot carry is refused by the shared reconfigure door instead of replacing the playing title (and a Quality rung, which only a Feed or a converting provider can carry, is neither offered nor applied: `PlaybackSession::quality_pick_carriable`); a stall or failure of the original is not re-resolved on a composition with no Feed and no converting provider (`can_retry_uri_after_release`), so the viewer reads the stall and not a refusal; the parked attempt's `stopped` timeline goes out at the restore's retire and at an exit, at its own position; the codec table stays `Caps::assumed()` (D8). `player::MEDIA` replaces `NO_MEDIA`
@@ -2062,7 +2069,7 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
   `plx_host_stop` (`Refusal::Stopping`) releases the attempt and `OnTerminate` closes the player before waiting for `on_stopped` (the C# is NOT compiled here); one library log line per player ABI event (positions and buffering
   rate-limited); the EOS "off-route engine" line is guarded while a URI attempt is releasing. **Home with a player open never resumed: fixed in code, emulator re-run pending** (the library parks a URI attempt with
   `Stop(Suspend)` at the background, then the restore's `begin_resume` answered `NoRoute` because a URI original plan installs no `url`; a parked URI original is now re-resolved at the saved position through the foreground flight, `player::pump_uri_restore`, shared with webOS `play-uri`; the library owns the resume and the host never starts a player at OnResume; see `docs/tizen.md`).
-- As landed (PR B1 review rounds 4 and 5; the emulator runs at `126d1f04c`, `fc5d28594` and `b62e1276e` against the mock found these; emulator and mock data only, nothing here is "verified" on a set, and each fix is "fixed in code, emulator re-run pending"): round 4 sent the parked attempt's `stopped` at its own position when the restore retires it and at an exit, stopped re-resolving a stalled URI title into a refusal no composed backend can answer, and withheld the Quality ladder on a composition that converts nothing. Round 5: a restore whose request door refused no longer leaves the parked attempt owing a stop it already sent (`route::restore_uri_original` answers `UriRestoreStart`, the attempt is finalized when its report went out); a `PLAYER_CLOSED` of a live epoch is still heard after `plx_host_stop` (the confirmation of a CLOSE the host had already accepted, so the stop is not held for `STOP_DEADLINE` and reported unclean); `PlxPlayer.Shutdown` sets `shuttingDown` under the start gate and `EnsureThreads` and `DoOpen` honour it (C#, NOT compiled); the failure read-out offers no *Change quality* where `quality_pick_carriable()` is false (`FailureContext::quality_carriable`). A stall leaves the PMS session open under the read-out exactly as the webOS Feed does (`release_failed_engine`: "nothing is reported as stopped", Back ends it): no change. **Open measurement:** two main-thread hangs of about 300 to 400 ms around the host's `Buffering` and `SeekDone epoch=2` lines during the URI restore have no cause established from the code (see `docs/tizen.md`, "Review round 5"); to diagnose with spans, per the `profile-tv` skill's method.
+- As landed (PR B1 review rounds 4 and 5; the emulator runs at `126d1f04c`, `fc5d28594` and `b62e1276e` against the mock found these; emulator and mock data only, nothing here is "verified" on a set, and each fix is "fixed in code, emulator re-run pending"): round 4 sent the parked attempt's `stopped` at its own position when the restore retires it and at an exit, stopped re-resolving a stalled URI title into a refusal no composed backend can answer, and withheld the Quality ladder on a composition that converts nothing. Round 5: a restore whose request door refused no longer leaves the parked attempt owing a stop it already sent (`route::restore_uri_original` answers `UriRestoreStart`, the attempt is finalized when its report went out); a `PLAYER_CLOSED` of a live epoch is still heard after `plx_host_stop` (the confirmation of a CLOSE the host had already accepted, so the stop is not held for `STOP_DEADLINE` and reported unclean); `PlxPlayer.Shutdown` sets `shuttingDown` under the start gate and `EnsureThreads` and `DoOpen` honour it (C#, NOT compiled); the failure read-out offers no *Change quality* where `quality_pick_carriable()` is false (`FrozenOffers::quality_carriable`, carried by the session's `PlaybackFailure`). A stall leaves the PMS session open under the read-out exactly as the webOS Feed does (`release_failed_engine`: "nothing is reported as stopped", Back ends it): no change. **Open measurement:** two main-thread hangs of about 300 to 400 ms around the host's `Buffering` and `SeekDone epoch=2` lines during the URI restore have no cause established from the code (see `docs/tizen.md`, "Review round 5"); to diagnose with spans, per the `profile-tv` skill's method.
 - Verify: `DriverSet` contract tests against the fake host table, and a late completion after stop; a
   device run on mock media. Risk: UNVERIFIED how PMS's decision answers `X-Plex-Platform: Tizen`: measured
   on the mock, then on a household-owned test server only with the owner's consent.
@@ -2085,7 +2092,8 @@ W3d. Neutral types (L15b item 2 prerequisites; part of item 3).
 ### W12 (H, after W10 and W11). Tizen feed over esplusplayer (optional)
 - A Feed sink over `dlopen("libesplusplayer.so")` (T6), after Option B is chosen. Verify: struct layouts
   against the set's binary (report 2e), a device run on mock media. Risk: firmware-dependent ABI and
-  certificate policy; decided after W10 ships.
+  certificate policy. The packet-player probe settled both for one retail Tizen 9.0 set: its layouts are the build's, and it opens
+  without the Partner privilege (`docs/tizen.md`, "The packet player"). The port's design is there too.
 
 ### W13 (N). The macOS app and the Windows simulator as product platforms
 - A Keychain key store, and a URI driver over AVPlayer or a Feed sink over VideoToolbox ("A Mac playback

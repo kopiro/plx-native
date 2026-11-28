@@ -165,6 +165,30 @@ fn a_bar_opener_is_lifted_once_per_frame_by_the_opener_pass_on_the_live_presenta
         "the surface is handed the live drawn rect of the opener");
 }
 
+/// **A page element's surface is handed the opener's live drawn rect on every frame, as a bar member's is**: a header pill rides
+/// its page, so a page that glides while the menu is up (focus on the pill brings it home; a wheel moves it) moves the control the
+/// glass grows out of and drains back into. `Screen::opener_rect` is the one way a surface learns it (`Menu::track_opener`); an anchor
+/// taken once, when the menu opened, is frozen where the control stood then. Red while the dispatcher told only a bar opener's surface.
+#[test]
+fn a_page_openers_surface_is_handed_the_openers_drawn_rect_every_frame() {
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig, _) = booted();
+    let id = open_modal(&mut d, &mut rig, Style::Compact, 16);
+    let host = d.nav.top_page().map(|e| e.id).expect("the booted page");
+    let pill = FocusKey { entry: host, elem: 2 };
+    modal_mut(&mut d, id).opener = Some((host, Some(pill)));
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    d.draw(&mut rig, true);
+    assert_eq!(modal_of(&d, id).opener_seen.last().copied(), Some(crate::Rect::new(400.0, 100.0, 180.0, 180.0)),
+        "the surface is handed where the control is drawn");
+    // the page glides: the control is drawn 40 px up, and the next frame says so
+    let page = d.nav.tabs.stack.top_mut().unwrap().inst.as_mut().unwrap().screen.as_any_mut().unwrap();
+    page.downcast_mut::<crate::fixture::FixtureScreen>().expect("fixture screen").set_drawn_dy(-40.0);
+    d.draw(&mut rig, true);
+    assert_eq!(modal_of(&d, id).opener_seen.last().copied(), Some(crate::Rect::new(400.0, 60.0, 180.0, 180.0)),
+        "and follows it as the page moves");
+}
+
 /// **A bar member a surface hangs from is left OUT of the chrome pass, as a page leaves its opener
 /// out of its own** (owner, 2026-11-17: the profile chip is CONSUMED by its morph). The lift pass is
 /// the member's only copy, at the morph's alpha, so a chip the menu has consumed is not drawn by the
@@ -446,6 +470,31 @@ fn the_scrim_ladder_scales_by_appear_and_the_route_dip() {
     // settled and no transition: exactly what the surface declared
     d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
     assert!((d.nav.modals.scrims(1.0)[0].1 - 0.5).abs() < 1e-6);
+}
+
+/// **A dim that exists only over a held page is the style's answer, never the plane's** (`Scrim::over_host`,
+/// Live TV's number entry): a surface whose host is cached (a menu over a page) owes the page its dim, and with it
+/// the latched field its glass stands on; one whose host stays live (`PlayerPanel`, the video plane behind) owes
+/// none, whatever the plane's bound bit says, so nothing latches and no dim lands on the picture. A plain dim is
+/// unchanged on either style.
+#[test]
+fn a_host_only_dim_is_owed_over_a_held_page_and_never_over_a_live_host() {
+    let owed = |style: Style, over_host: bool| {
+        let (mut d, mut rig, _) = booted();
+        let id = open_modal(&mut d, &mut rig, style, 16);
+        let m = modal_mut(&mut d, id);
+        m.scrim_alpha = crate::theme::underlay::DIM_COMPACT;
+        m.scrim_over_host = over_host;
+        d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+        let dims = d.nav.modals.scrims(1.0);
+        (dims.len(), dims.first().map(|&(_, a)| a), d.nav.modals.first_dim(1.0).is_some())
+    };
+    let compact = crate::theme::underlay::DIM_COMPACT;
+    assert_eq!(owed(Style::Compact, true), (1, Some(compact), true), "a menu over a page owes its dim");
+    for style in [Style::PlayerPanel { survives_failure: false }, Style::PlayerPanel { survives_failure: true }] {
+        assert_eq!(owed(style, true), (0, None, false), "{style:?}: a live host has no page to dim");
+        assert_eq!(owed(style, false).0, 1, "{style:?}: a plain dim is the surface's own business");
+    }
 }
 
 /// **The frame's lowest dim as a pure value** (`ModalStack::first_dim`, which the host bakes the frost's

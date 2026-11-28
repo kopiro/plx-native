@@ -1161,8 +1161,8 @@ fn a_restore_memory_keeps_the_scroll_of_a_live_body_while_the_re_read_is_owed() 
 /// The same return, but the store holds one detail at a time and closing a film opened from the
 /// cast member's list emptied it: the body comes back with no detail, keeps its scroll while the
 /// re-read is owed, and the re-read then FAILS. Nothing moves the scroll after that (`reveal_focus`
-/// returns early without a detail) and the hero, the only thing drawn without one, is faded out past
-/// `HERO_FADE`, so the page must go back to the top where the hero is.
+/// returns early without a detail), and the page is now the failed read-out with nothing below it,
+/// so the page must go back to the top.
 #[test]
 fn a_return_whose_re_read_fails_puts_the_page_back_at_the_top() {
     let guard = plx_base::testlock::serial();
@@ -1184,12 +1184,13 @@ fn a_return_whose_re_read_fails_puts_the_page_back_at_the_top() {
     let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
     {
         let (state, adapter) = test_store().split_for_test();
-        assert!(!plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, state, adapter, sid, "show", generation, None));
+        assert!(plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, state, adapter, sid, "show", generation, None), "the failed re-read is a change");
     }
     assert!(screen.detail(test_store().view()).is_none());
+    assert!(screen.failed(test_store().view()), "the page with no item reads Failed, and draws the failed read-out");
     pump_restore(&mut screen);
     assert!(screen.restore_intent.is_none() && !screen.return_pending, "the return gave up");
-    assert_eq!(screen.scroll_target, 0.0, "a page with no detail shows only the hero, so it goes back to it");
+    assert_eq!(screen.scroll_target, 0.0, "a page with no detail has no body to scroll, so it goes back to the top");
     test_store().run(MetadataCmd::Clear);
     clear();
 }
@@ -5869,6 +5870,7 @@ fn the_picker_follows_the_file_play_starts_when_no_version_was_chosen() {
         sid: ServerId::UNSET,
         rk: "leaf".into(),
         anchor: [0; 4],
+        opener: None,
         source: crate::registry::PreplaySource::Page,
     };
     let tracks = crate::registry::preplay_tracks_of(test_store().view(), &arg);
@@ -5890,7 +5892,7 @@ fn a_hero_control_handed_back_after_it_left_the_page_does_nothing() {
         clear();
         effects.iter().any(|e| matches!(
             &e.fx,
-            Fx::App(AppFx::Content(ContentReq::Panel(ContentPanel::PreplayTracks { anchor: got }))) if *got == anchor
+            Fx::App(AppFx::Content(ContentReq::Panel(ContentPanel::PreplayTracks { anchor: got, .. }))) if *got == anchor
         ))
     };
     let with_tracks = Detail { audio: vec![stream(1, true), stream(2, false)], subs: vec![stream(3, false)], ..versioned("movie", 1) };
@@ -6282,6 +6284,9 @@ fn the_detail_more_disc_tracks_the_captured_server_delete_permission() {
 #[path = "no_driver_tests.rs"]
 mod no_driver;
 
+#[path = "failed_tests.rs"]
+mod failed_page;
+
 /// W6c: a platform that composes no playback driver leaves Detail's Play pill inert (it owns no focus
 /// stop either: `no_driver`'s tests). The same press with a driver composed starts the play, so the
 /// guard is the only difference.
@@ -6315,7 +6320,7 @@ fn the_play_pill_reads_disabled_when_no_playback_driver_is_composed() {
         let screen = bare(&_guard, sid, "movie");
         let measure = plx_ui::fixture::FixtureMeasure;
         let runs = plx_ui::draw_census::capture_runs(|| {
-            screen.draw_buttons(plx_ui::Painter::recording(), &cx(&measure, None), 600.0, 1.0)
+            screen.draw_buttons(plx_ui::Painter::recording(), &cx(&measure, None), 600.0, 1.0, super::ButtonPass::Page { lifted: None })
         });
         NO_DRIVER.with(|flag| flag.set(false));
         inks.push(runs.iter().find(|r| r.text == play_label).map(|r| r.ink));

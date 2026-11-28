@@ -111,6 +111,8 @@ const AMBER_500: [f32; 4] = rgb8(0xe5, 0xa0, 0x0d);
 const AMBER_950: [f32; 4] = rgb8(0x1a, 0x12, 0x04);
 const RED_400: [f32; 4] = rgb8(0xeb, 0x52, 0x4a);
 const RED_500: [f32; 4] = rgb8(0xf5, 0x34, 0x1a);
+/// The Live badge's red, `#ff453a`: a STATE mark (the channel is live), never a failure read-out.
+const RED_LIVE: [f32; 4] = rgb8(0xff, 0x45, 0x3a);
 const GREEN_400: [f32; 4] = rgb8(0x3e, 0xc9, 0x6b);
 const GREEN_500: [f32; 4] = rgb8(0x2f, 0xae, 0x5b);
 
@@ -375,13 +377,19 @@ pub mod logo {
     pub const CARD_BOTTOM_INSET: f32 = 48.0;
     /// A Live TV channel's logo on its plate ([`CHANNEL_PLATE`](super::CHANNEL_PLATE), 250x140): the
     /// ink area an ordinary wordmark is sized to. Chosen so a 6.5:1 wordmark reaches the width limit
-    /// and a 2.6:1 mark stands 61 px tall, which is where the handoff's LTV-17 board puts them (its own
-    /// per-logo sizes follow an ink-area measure of each source, which a texture's full size is not).
+    /// and a 2.6:1 mark stands 61 px tall, which is where the handoff's LTV-17 board puts them. The
+    /// board's per-logo sizes follow an ink-area measure of each source, and so does the plate now: it is
+    /// fitted to the logo's INK box (`art_fit::ink_of`), not its canvas (`hero_logo::fit_ink`). The number
+    /// was chosen against the board's two sizes and is unchanged by that.
     pub const CHANNEL_AREA: f32 = 10_000.0;
     /// The channel logo's slot is this tall, and no mark is taller (the handoff's 218 x 84 box).
     pub const CHANNEL_H_MAX: f32 = 84.0;
     /// ...and this wide: the tile's 250 less 16 px on each side.
     pub const CHANNEL_W_MAX: f32 = 218.0;
+    /// A logo sized by its ink box ([`hero_logo::fit_ink`](crate::hero_logo::fit_ink)) is drawn at most this many
+    /// pixels per texel of the box: a mark only a few texels across stands as a small smear, not a slot-filling one.
+    /// A Pluto-size logo (576 x 288, decoded 436 wide) is drawn at no more than 0.65 px per texel (measured on 40 of them), far under it.
+    pub const INK_UPSCALE: f32 = 2.0;
 }
 
 // ── Accent / control ─────────────────────────────────────────────────────────
@@ -545,6 +553,9 @@ pub const CONTROL_CAST_FOCUS: [(f32, f32, f32); 2] = [(5.0, 32.0, 0.34), (1.0, 6
 /// MEDIUM gray, deliberately not near-black: the focused-card drop-shadow only reads against a base
 /// this light (on the old near-black 25,25,29 a black shadow had almost nothing to darken).
 pub const SURFACE_APP: [f32; 4] = NEUTRAL_500;
+/// [`SURFACE_APP`] as the bytes a one-texel ground texture carries (the art ground's flat stand-in for art with a
+/// clear ground, [`crate::art_ground::SPEC`]). Pinned equal by a test.
+pub const SURFACE_APP_RGB8: [u8; 3] = [0x2c, 0x2c, 0x2e];
 /// Opaque sheet drawn over the hardware video plane when a detail page scrolls the hero away.
 /// Same stop as [`SURFACE_APP`] so the rising page and the cover are one surface. Different role:
 /// this hides the plane. It is not atmosphere, so [`scrim`] is the wrong token.
@@ -816,7 +827,7 @@ pub const CARD_ABSENT: [f32; 4] = COOL_850;
 /// transparent ground reads the same whatever the channel's brand colour is.
 pub const CHANNEL_PLATE: [f32; 4] = COOL_825;
 /// [`CHANNEL_PLATE`] as the bytes a one-texel ground texture carries (a poster tile that contains a
-/// picture with a transparent ground, [`crate::art_fit::BackdropSpec::ground`]). Pinned equal by a test.
+/// picture with a transparent ground, [`crate::art_fit::CopySpec::ground`]). Pinned equal by a test.
 pub const CHANNEL_PLATE_RGB8: [u8; 3] = [0x22, 0x27, 0x2d];
 /// Loading-skeleton gradient — top. The same `COOL_850` stop as [`CARD_PLACEHOLDER`]: a card whose
 /// artwork is on the way and one with none to load are the same object at rest. Both lean BLUE,
@@ -861,6 +872,12 @@ pub const fn white(a: f32) -> [f32; 4] {
 /// Near-black scrim at alpha `a` — hero/scroll dimming.
 pub const fn scrim(a: f32) -> [f32; 4] {
     [SCRIM_INK[0], SCRIM_INK[1], SCRIM_INK[2], a]
+}
+
+/// The live banner's scrim ink at alpha `a`: `rgba(8,8,10)` of the handoff (SPEC-4), the primitive stop
+/// `NEUTRAL_950`, a hair off black so the banner's ground belongs to the app's neutral family.
+pub const fn live_scrim(a: f32) -> [f32; 4] {
+    [NEUTRAL_950[0], NEUTRAL_950[1], NEUTRAL_950[2], a]
 }
 
 /// Pure-black scrim at alpha `a` — HUD/modal dimming.
@@ -1383,6 +1400,18 @@ pub const TAB_PLATE_SELECTED: [f32; 4] = with_a(WHITE, 0.20);
 pub const TAB_PLATE_SELECTED_OVER: [f32; 4] = with_a(WHITE, 0.13);
 /// An unselected plated segment — present, but only just: it says "this is a control" and nothing more.
 pub const TAB_PLATE_IDLE: [f32; 4] = with_a(WHITE, 0.08);
+/// **The Guide's focused programme cell** (the Live TV handoff's `SPEC-3` item 7): white at .92, over the
+/// plate it replaces, with [`GUIDE_CELL_FOCUS_INK`] on it and the card shadow at its focused ceiling.
+pub const GUIDE_CELL_FOCUS: [f32; 4] = with_a(WHITE, 0.92);
+/// The ink on [`GUIDE_CELL_FOCUS`] and on the now chip: the cool 900 stop (`--color-cool-900`).
+pub const GUIDE_CELL_FOCUS_INK: [f32; 4] = COOL_900;
+/// A focused cell's time line, one step back from [`GUIDE_CELL_FOCUS_INK`].
+pub const GUIDE_CELL_FOCUS_INK_QUIET: [f32; 4] = with_a(COOL_900, 0.72);
+/// The Guide's now line and now chip (`SPEC-3` item 4): white at .95.
+pub const GUIDE_NOW: [f32; 4] = with_a(WHITE, 0.95);
+/// Time already aired (`SPEC-3` item 4): black at .22, over the aired part of each programme cell in that cell's own
+/// outline (never over the gaps between cells).
+pub const GUIDE_AIRED_SHADE: [f32; 4] = with_a(BLACK, 0.22);
 /// Softer selection panel — the lightest weight on the overlay ramp, and deliberately NOT
 /// [`TAB_PLATE_IDLE`]'s .08 one step up. The design project briefly resolved this role to that .08
 /// stop while its own specimen card and readme both said .07; holding the product at .07 was the
@@ -1406,6 +1435,14 @@ pub const PILL_KEYLINE_BG: [f32; 4] = scrim_black(0.55);
 /// Filled metadata chip (the About column's CC/SDH/AD accessibility badges). A COOL tint rather than
 /// plain white at a weight, so a chip reads as a plate rather than as a gap in the panel.
 pub const BADGE_FILL: [f32; 4] = with_a(COOL_150, 0.20);
+/// The player banner's LIVE badge fill, `#ff453a`: a state mark ("this channel is live"), allowed
+/// beside the no-red rule, which is about failure read-outs (owner default, Live TV PR4 / Q4).
+pub const LIVE_BADGE_FILL: [f32; 4] = RED_LIVE;
+/// Ink on [`LIVE_BADGE_FILL`].
+pub const LIVE_BADGE_INK: [f32; 4] = WHITE;
+/// The chip radius of the design system (`--radius-chip`): the filled metadata chip's corner, and the
+/// LIVE badge's.
+pub const RADIUS_CHIP: f32 = 7.0;
 /// No-op texture tint (structural: draw an RGBA texture unmodified).
 pub const TINT_WHITE: [f32; 4] = WHITE;
 /// The brightness the blurred copy a tile draws BEHIND its contained art keeps

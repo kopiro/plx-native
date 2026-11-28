@@ -271,6 +271,14 @@
     "value": "Playback failed — the server cannot play or convert this file",
     "description": "Player error caption or supporting subscription fact."
   },
+  "widgets.failure.direct_play_disabled": {
+    "value": "Playback failed — Direct Play is disabled",
+    "description": "Player error caption when the Direct Play setting is Disabled and the stream can only play as the original file: the viewer's own setting refused it, not the server. Direct Play is the Settings name for playing a file as it is, without conversion by the server."
+  },
+  "widgets.failure.no_backend": {
+    "value": "Playback failed — this TV can’t play this file in PlxNative",
+    "description": "Player error caption when PlxNative has no way to play this file on this TV: the app itself cannot, and the server was never asked. Not a server or network fault."
+  },
   "widgets.failure.audio_only": {
     "value": "Playback failed — server sent audio only",
     "description": "Player error caption or supporting subscription fact."
@@ -298,6 +306,10 @@
   "widgets.reason.refused": {
     "value": "The server cannot play or convert this file",
     "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.reason.no_backend": {
+    "value": "PlxNative can’t play this file on this TV yet",
+    "description": "Explanation beneath the playback-failed heading when PlxNative has no way to play this file on this TV. Device paths and project identifiers stay unchanged."
   },
   "widgets.reason.audio_only": {
     "value": "The server sent audio only — it found no usable video transcode target",
@@ -534,6 +546,16 @@
     "value": "the server refused the item at /decision — it can neither direct play nor convert it",
     "translate": false,
     "description": "Playback verdict line: the server refused the item at the /decision endpoint."
+  },
+  "widgets.panel.direct_play_disabled": {
+    "value": "Direct Play is disabled and this stream can only play as the original; the server was not asked to convert it",
+    "translate": false,
+    "description": "Playback verdict line: the Direct Play setting is Disabled and the stream can only be played as the original file."
+  },
+  "widgets.panel.no_backend": {
+    "value": "no backend this build composes can play this item on this TV; the server was not asked",
+    "translate": false,
+    "description": "Playback verdict line: this build has no playback backend that qualifies for the item."
   },
   "widgets.panel.audio_only_no_pass": {
     "value": "server sent audio only — it found no usable video transcode target (server has no Plex Pass)",
@@ -1144,5 +1166,34 @@
       "number": "str",
       "programme": "str"
     }
+  },
+  "widgets.live.badge": {
+    "value": "LIVE",
+    "description": "The player banner's badge on a live channel: a short all-caps state word on a red chip (MICRO, bold, tracked). Keep it to one or two short words."
+  },
+  "widgets.live.next_at": {
+    "value": "Next at {time}",
+    "description": "The player banner's last line on a live channel: when the next programme starts. {time} is the clock time in the viewer's format, for example 22:39.",
+    "args": {
+      "time": "str"
+    }
+  },
+  "widgets.live.entry_none": {
+    "value": "No channel {number}",
+    "description": "Number entry on Live TV: shown in place of the list when the digits typed so far start no channel's number. {number} is the digits typed, for example 2099.",
+    "args": {
+      "number": "str"
+    }
+  },
+  "widgets.live.entry_more": {
+    "value": "+{count} more \u00b7 \u25b2 \u25bc to scroll",
+    "description": "Number entry on Live TV: the line under the list of five matches when more match. {count} is how many more there are; the arrows are the Up and Down keys. A MICRO caption: keep it short.",
+    "args": {
+      "count": "str"
+    }
+  },
+  "widgets.live.playing": {
+    "value": "Playing",
+    "description": "Number entry on Live TV: the small tag on the channel that is already on screen, so OK on it is never a silent no-op. One short word (MICRO, in a chip)."
   }
 }

@@ -758,3 +758,31 @@ The Library order Settings page (`SettingsPage::LibraryOrder`, `ScreenId` 122, #
 `14642991569603421247`, the screen half only: the Settings argument shape's new variant and `TableView::MOTION_SHAPE`'s new lift and
 glide springs); both anchors were re-recorded the same way, and the closed alphabet's owner-word pattern gained `library-order`. Targets and
 Resolve report SAME again with every difference counter at zero (977 and 1328 frames). `docs/ui-replay-v13-anchor.md` has the record.
+
+The live player's banner, zap and art phases (Live TV PR4) joined the Player and Live TV screens' canon, which moved
+`SCREEN_SHAPES_PIN` again, so the two current anchors, `v13-owned-input-content` and `13-by-id-filmography`, were
+observed refused and recorded afresh (`tests/focusfp.sh --rec --only 12,13`, `plxnative-rec rerecord`, `anchor: true`
+preserved; shape `5605084147580227429`). `make check-replay` replays them SAME in Targets and Resolve (902 and 1204 frames,
+every difference counter zero); the four historical fixtures keep their expected refusal. `docs/ui-replay-v13-anchor.md`
+has the record.
+
+Number entry (Live TV PR5) added the registered surface `AppArg::ChannelEntry` to the screen census, which moved
+`SCREEN_SHAPES_PIN` again, so the two current anchors were recorded afresh
+(`tests/focusfp.sh --rec --only 12,13`, `plxnative-rec rerecord`, `anchor: true` preserved; shape `8097297399644097420`).
+`make check-replay` replays them SAME in Targets and Resolve (908 and 1204 frames, every difference counter zero); the
+four historical fixtures keep their expected refusal. `docs/ui-replay-v13-anchor.md` has the record.
+
+The Guide (Live TV PR6) added the Live TV screen's scope and its board's page, window start and held-ahead flag to the
+screen's canon, which moved `SCREEN_SHAPES_PIN` again (`0x1990_0160_ac8b_0137` -> `0xd1ed_8cb4_ad5b_5093`), so the two current
+anchors were recorded afresh (`tests/focusfp.sh --rec --only 12,13`, `plxnative-rec rerecord`, `anchor: true` preserved;
+shape `18326723613369063426`). `make check-replay` replays them SAME in Targets and Resolve (911 and 1192 frames, every
+difference counter zero); the four historical fixtures keep their expected refusal. `docs/ui-replay-v13-anchor.md`
+has the record. A controlled recording publishes no wall clock, as its replay does not (`clock::hold_no_wall`), so a
+recording carries no measure of the TopBar clock's text (the time of day) at all.
+
+Live TV Browse (PR7) added the scope's filter and an empty-filter mode to the Live TV screen's canon and the filter menu
+as the registered surface `AppArg::LiveTvFilter`, which moved `SCREEN_SHAPES_PIN` again (`0xd1ed_8cb4_ad5b_5093` ->
+`0x0c73_d7b2_0b49_1548`), so the two current anchors were recorded afresh (`tests/focusfp.sh --rec --only 12,13`,
+`plxnative-rec rerecord`, `anchor: true` preserved; shape `9368468189897822625`). `make check-replay` replays them SAME
+in Targets and Resolve (885 and 1136 frames, every difference counter zero); the four historical fixtures keep their
+expected refusal. `docs/ui-replay-v13-anchor.md` has the record.
